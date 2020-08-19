@@ -7,8 +7,8 @@
 #include <poll.h>
 
 typedef struct {
-  int start_byte;                 /* The start byte, negative if unknown. */
-  int end_byte;                   /* The last byte, negative if unknown. */
+  int64_t start_byte;                 /* The start byte, negative if unknown. */
+  int64_t end_byte;                   /* The last byte, negative if unknown. */
   char modifiable;                /* The modifiable flag. */
   unsigned int *state_sequence;   /* The annotation keeping the state feedback. */
   unsigned int state_count;       /* Number of states stored in state_sequence. */
@@ -64,6 +64,7 @@ unsigned int* extract_response_codes_tls(unsigned char* buf, unsigned int buf_si
 unsigned int* extract_response_codes_dicom(unsigned char* buf, unsigned int buf_size, unsigned int* state_count_ref);
 unsigned int* extract_response_codes_dns(unsigned char* buf, unsigned int buf_size, unsigned int* state_count_ref);
 unsigned int* extract_response_codes_ftp(unsigned char* buf, unsigned int buf_size, unsigned int* state_count_ref);
+unsigned int* extract_response_codes_opcua(unsigned char* buf, unsigned int buf_size, unsigned int* state_count_ref);
 unsigned int* extract_response_codes_rtsp(unsigned char* buf, unsigned int buf_size, unsigned int* state_count_ref);
 unsigned int* extract_response_codes_dtls12(unsigned char* buf, unsigned int buf_size, unsigned int* state_count_ref);
 unsigned int* extract_response_codes_sip(unsigned char* buf, unsigned int buf_size, unsigned int* state_count_ref);
@@ -77,6 +78,7 @@ region_t* extract_requests_tls(unsigned char* buf, unsigned int buf_size, unsign
 region_t* extract_requests_dicom(unsigned char* buf, unsigned int buf_size, unsigned int* region_count_ref);
 region_t* extract_requests_dns(unsigned char* buf, unsigned int buf_size, unsigned int* region_count_ref);
 region_t* extract_requests_ftp(unsigned char* buf, unsigned int buf_size, unsigned int* region_count_ref);
+region_t* extract_requests_opcua(unsigned char* buf, unsigned int buf_size, unsigned int* region_count_ref);
 region_t* extract_requests_rtsp(unsigned char* buf, unsigned int buf_size, unsigned int* region_count_ref);
 region_t* extract_requests_dtls12(unsigned char* buf, unsigned int buf_size, unsigned int* region_count_ref);
 region_t* extract_requests_sip(unsigned char* buf, unsigned int buf_size, unsigned int* region_count_ref);

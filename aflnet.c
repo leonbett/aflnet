@@ -10,6 +10,7 @@
 
 #include "alloc-inl.h"
 #include "aflnet.h"
+#include "decoders/open62541.h"
 
 // Protocol-specific functions for extracting requests and responses
 
@@ -577,6 +578,122 @@ region_t* extract_requests_ftp(unsigned char* buf, unsigned int buf_size, unsign
   return regions;
 }
 
+region_t *
+extract_requests_opcua(unsigned char *buf, unsigned int buf_size, unsigned int *region_count_ref) {
+    unsigned char *pos = buf;
+    const unsigned char *const start = buf;
+    unsigned char *cur_start;
+    const unsigned char *const end = buf + buf_size;
+
+    unsigned int region_count = 0;
+    region_t *regions = NULL;
+
+    while (pos < end) {
+        cur_start = pos;
+        // not enough space for header
+        if (pos + 8 > end)
+            break;
+        uint32_t messageSize = 0;
+        {
+            size_t offset = 0;
+            UA_ByteString data;
+            data.data = pos;
+            data.length = end - pos;
+            UA_TcpMessageHeader hdr;
+            UA_TcpMessageHeader_decodeBinary(&data, &offset, &hdr);
+            pos += offset;
+            messageSize = hdr.messageSize;
+        }
+        pos += messageSize - 8;
+
+        // is the complete message contained in the buffer?
+        if (pos <= end) {
+            region_count++;
+            regions = (region_t *)ck_realloc(regions, region_count * sizeof(region_t));
+            regions[region_count - 1].start_byte = cur_start - start;
+            regions[region_count - 1].end_byte = pos - start - 1;
+            regions[region_count - 1].state_sequence = NULL;
+            regions[region_count - 1].state_count = 0;
+        } else {
+            break;
+        }
+    }
+
+    //in case region_count equals zero, it means that the structure of the buffer is broken
+    //hence we create one region for the whole buffer
+    if ((region_count == 0) && (buf_size > 0)) {
+        regions = (region_t *)ck_realloc(regions, sizeof(region_t));
+        regions[0].start_byte = 0;
+        regions[0].end_byte = buf_size - 1;
+        regions[0].state_sequence = NULL;
+        regions[0].state_count = 0;
+
+        region_count = 1;
+    }
+
+    *region_count_ref = region_count;
+    return regions;
+}
+
+unsigned int *
+extract_response_codes_opcua(unsigned char *buf, unsigned int buf_size, unsigned int *state_count_ref) {
+    unsigned char* pos = buf;
+    unsigned char* const end = buf + buf_size;
+
+    unsigned int *state_sequence = NULL;
+    unsigned int state_count = 0;
+
+    // always one initial state
+    state_count++;
+    state_sequence = (unsigned int *)ck_realloc(state_sequence, state_count * sizeof(unsigned int));
+    state_sequence[state_count - 1] = 0;
+
+    while (pos < end) {
+        // not enough space for header
+        if (pos + 8 > end)
+            break;
+        uint32_t messageSize = 0;
+        uint32_t messageTypeAndChunkType = (uint32_t)-1;
+        {
+            size_t offset = 0;
+            UA_ByteString data;
+            data.data = pos;
+            data.length = end - pos;
+            UA_TcpMessageHeader hdr;
+            if (UA_TcpMessageHeader_decodeBinary(&data, &offset, &hdr) != UA_STATUSCODE_GOOD) {
+                pos = end;
+            } else {
+                pos += offset;
+                messageSize = hdr.messageSize;
+                messageTypeAndChunkType = hdr.messageTypeAndChunkType;
+            }
+
+        }
+        pos += messageSize - 8;
+
+        // is the complete message contained in the buffer?
+        if (pos <= end) {
+            state_count++;
+            state_sequence = (unsigned int *)ck_realloc(state_sequence, state_count * sizeof(unsigned int));
+            state_sequence[state_count - 1] = messageTypeAndChunkType;
+        } else {
+            break;
+        }
+    }
+
+    *state_count_ref = state_count;
+    return state_sequence;
+}
+
+unsigned int *
+extract_response_codes_smtp(unsigned char *buf, unsigned int buf_size, unsigned int *state_count_ref) {
+    char *mem;
+    unsigned int byte_count = 0;
+    unsigned int mem_count = 0;
+    unsigned int mem_size = 1024;
+    unsigned int *state_sequence = NULL;
+    unsigned int state_count = 0;
+    char terminator[2] = {0x0D, 0x0A};
 region_t* extract_requests_sip(unsigned char* buf, unsigned int buf_size, unsigned int* region_count_ref)
 {
   char *mem;
@@ -742,7 +859,7 @@ region_t* extract_requests_ipp(unsigned char* buf, unsigned int buf_size, unsign
     memcpy(&mem[mem_count], buf + byte_count++, 1);
 
     //Check if the last bytes match the HTTP terminator (if data is sent) OR end-of-attributes-tag IPP command (if no data is sent)
-    if ((mem_count > 3) && 
+    if ((mem_count > 3) &&
     ((memcmp(&mem[mem_count - 3], terminator, 4) == 0) || (memcmp(&mem[mem_count], ipp, 1) == 0)) &&
     ((buf_size - byte_count >= 4) && (memcmp(buf + byte_count, "POST", 4) == 0))
     ) {
@@ -1458,13 +1575,13 @@ unsigned int* extract_response_codes_ipp(unsigned char* buf, unsigned int buf_si
     //Check if the last two bytes are 0x0D0A0D0A
     if ((mem_count > 3) && (memcmp(&mem[mem_count - 3], terminatorHTTP, 4) == 0)) {
       if ((mem_count >= 5) && (memcmp(mem, http, 5) == 0)) {
-        
+
         memcpy(tempHTTP, &mem[9], 4);
         tempHTTP[3] = 0x0;
         message_code = (unsigned int) atoi(tempHTTP);
 
         if (message_code == 0) break;
-        
+
         if (message_code == 200) {
           //Extract IPP response code (bytes 3 and 4)
           unsigned int third = (unsigned int) buf[byte_count + 2];
@@ -1478,8 +1595,8 @@ unsigned int* extract_response_codes_ipp(unsigned char* buf, unsigned int buf_si
         state_sequence = (unsigned int *)ck_realloc(state_sequence, state_count * sizeof(unsigned int));
 
         if (state_sequence == NULL) PFATAL("Unable realloc a memory region to store state sequence");
-        
-        state_sequence[state_count - 1] = message_code;       
+
+        state_sequence[state_count - 1] = message_code;
 
         mem_count = 0;
       } else {

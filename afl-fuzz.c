@@ -1032,7 +1032,7 @@ int send_over_network()
   serv_addr.sin_addr.s_addr = inet_addr(net_ip);
 
   //This piece of code is only used for targets that send responses to a specific port number
-  //The Kamailio SIP server is an example. After running this code, the intialized sockfd 
+  //The Kamailio SIP server is an example. After running this code, the intialized sockfd
   //will be bound to the given local port
   if(local_port > 0) {
     local_serv_addr.sin_family = AF_INET;
@@ -3830,7 +3830,7 @@ static void pivot_inputs(void) {
       u8* use_name = strstr(rsl, ",orig:");
 
       if (use_name) use_name += 6; else use_name = rsl;
-      nfn = alloc_printf("%s/queue/id:%06u,orig:%s", out_dir, id, use_name);
+      nfn = alloc_printf("%s/queue/id:%06u,time:0,orig:%s", out_dir, id, use_name);
 
 #else
 
@@ -3974,8 +3974,8 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #ifndef SIMPLE_FILES
 
-    fn = alloc_printf("%s/queue/id:%06u,%s", out_dir, queued_paths,
-                      describe_op(hnb));
+    fn = alloc_printf("%s/queue/id:%06u,time:%llu,%s", out_dir, queued_paths,
+                      get_cur_time() - start_time, describe_op(hnb));
 
 #else
 
@@ -8979,6 +8979,9 @@ int main(int argc, char** argv) {
         } else if (!strcmp(optarg, "TLS")) {
           extract_requests = &extract_requests_tls;
           extract_response_codes = &extract_response_codes_tls;
+        } else if (!strcmp(optarg, "OPCUA")) {
+          extract_requests = extract_requests_opcua;
+          extract_response_codes = extract_response_codes_opcua;
         } else if (!strcmp(optarg, "SIP")) {
           extract_requests = &extract_requests_sip;
           extract_response_codes = &extract_response_codes_sip;
