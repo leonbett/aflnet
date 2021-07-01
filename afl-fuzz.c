@@ -4784,6 +4784,15 @@ static void show_stats(void) {
   static double avg_exec;
   double t_byte_ratio, stab_ratio;
 
+  // write some syncing information to a file in shared memory s.t. other tools can
+  // make use of this information for syncing with AFL
+  char buffer[100];
+  FILE* fd = fopen("/dev/shm/aflsync", "w+");
+  snprintf(buffer, 99, "%d", queued_paths);
+  fputs(buffer, fd);
+  fsync(fd);
+  close(fd);
+
   u64 cur_ms;
   u32 t_bytes, t_bits;
 
