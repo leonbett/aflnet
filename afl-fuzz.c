@@ -4786,12 +4786,9 @@ static void show_stats(void) {
 
   // write some syncing information to a file in shared memory s.t. other tools can
   // make use of this information for syncing with AFL
-  char buffer[100];
-  FILE* fd = fopen("/dev/shm/aflsync", "w+");
-  snprintf(buffer, 99, "%d", queued_paths);
-  fputs(buffer, fd);
-  fsync(fd);
-  close(fd);
+  FILE* file = fopen("/dev/shm/aflsync", "w");
+  fprintf(file, "%d", queued_paths);
+  fclose(file);
 
   u64 cur_ms;
   u32 t_bytes, t_bits;
