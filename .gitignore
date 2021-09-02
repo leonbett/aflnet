@@ -13,6 +13,7 @@ afl-tmin
 aflnet-replay
 aflnet.o
 as
+cJSON.o
 
 # Binaries produced by "make -C llvm_mode"
 afl-clang-fast

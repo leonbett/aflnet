@@ -20,6 +20,7 @@ typedef struct {
 } message_t;
 
 typedef struct {
+  char label[STATE_STR_LEN];  /* state label */
   u32 id;                     /* state id */
   u8 is_covered;              /* has this state been covered */
   u32 paths;                  /* total number of paths exercising this state */
@@ -31,6 +32,13 @@ typedef struct {
   void **seeds;               /* keeps all seeds reaching this state -- can be casted to struct queue_entry* */
   u32 seeds_count;            /* total number of seeds, it must be equal the size of the seeds array */
 } state_info_t;
+
+KHASH_INIT(hm32, khint32_t, khint32_t, 1, kh_int_hash_func, kh_int_hash_equal)
+
+typedef struct {
+  u32 id;       /* transition id */
+  khash_t(hm32) *khm32_seeds_messages;
+} transition_info_t;
 
 enum {
   /* 00 */ PRO_TCP,
@@ -52,6 +60,8 @@ KHASH_SET_INIT_INT(hs32)
 
 // Initialize a hash table with int key and value is of type state_info_t
 KHASH_INIT(hms, khint32_t, state_info_t *, 1, kh_int_hash_func, kh_int_hash_equal)
+
+KHASH_INIT(hmt, khint32_t, transition_info_t *, 1, kh_int_hash_func, kh_int_hash_equal)
 
 // Functions for extracting requests and responses
 

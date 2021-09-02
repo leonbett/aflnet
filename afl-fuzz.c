@@ -70,6 +70,8 @@
 #include "aflnet.h"
 #include <graphviz/gvc.h>
 #include <math.h>
+#include <igraph/igraph.h>
+#include "cJSON.h"
 
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined (__OpenBSD__)
 #  include <sys/sysctl.h>
@@ -344,6 +346,21 @@ enum {
   /* 05 */ FAULT_NOBITS
 };
 
+/* Json parsing fault codes */
+
+enum {
+  /* 00 */ JSON_FAULT_NONE,
+  /* 01 */ JSON_FAULT_ROOT,
+  /* 02 */ JSON_FAULT_GRAPH,
+  /* 03 */ JSON_FAULT_STATE,
+  /* 04 */ JSON_FAULT_KEY,
+  /* 05 */ JSON_FAULT_CHILDREN,
+  /* 06 */ JSON_FAULT_PARENTS,
+  /* 07 */ JSON_FAULT_DEPENDANTS,
+  /* 08 */ JSON_FAULT_STACK,
+  /* 09 */ JSON_FAULT_OTHER
+};
+
 char** use_argv;  /* argument to run the target program. In vanilla AFL, this is a local variable in main. */
 /* add these declarations here so we can call these functions earlier */
 static u8 run_target(char** argv, u32 timeout);
@@ -390,15 +407,17 @@ u8 state_aware_mode = 0;
 u8 region_level_mutation = 0;
 u8 state_selection_algo = ROUND_ROBIN, seed_selection_algo = RANDOM_SELECTION;
 u8 false_negative_reduction = 0;
+u8 gfuzzer_mode = 0;
 
 /* Implemented state machine */
-Agraph_t  *ipsm;
+igraph_t  ipsm;
 static FILE* ipsm_dot_file;
 
 /* Hash table/map and list */
 klist_t(lms) *kl_messages;
 khash_t(hs32) *khs_ipsm_paths;
 khash_t(hms) *khms_states;
+khash_t(hmt) *khmt_transitions;
 
 //M2_prev points to the last message of M1 (i.e., prefix)
 //If M1 is empty, M2_prev == NULL
@@ -413,26 +432,299 @@ region_t* (*extract_requests)(unsigned char* buf, unsigned int buf_size, unsigne
 /* Initialize the implemented state machine as a graphviz graph */
 void setup_ipsm()
 {
-  ipsm = agopen("g", Agdirected, 0);
-
-  agattr(ipsm, AGNODE, "color", "black"); //Default node colr is black
-  agattr(ipsm, AGEDGE, "color", "black"); //Default edge color is black
+  //enable attributes and create an ipsm
+  igraph_set_attribute_table(&igraph_cattribute_table);
+  igraph_small(&ipsm, 0, IGRAPH_DIRECTED, -1);
 
   khs_ipsm_paths = kh_init(hs32);
 
   khms_states = kh_init(hms);
+  khmt_transitions = kh_init(hmt);
+}
+
+/* ipsm supporting functions */
+igraph_integer_t igraph_find_vertex_AS(igraph_t *g, char* attribute_name, char* value ) { 
+  igraph_integer_t ret = -1;
+  igraph_vs_t vs;
+
+  //select all vertices
+  igraph_vs_all(&vs);
+
+  //create an iterator based on the selected vertices
+  igraph_vit_t vit;
+  igraph_vit_create(g, vs, &vit);
+
+  //iterate through them and find the matching vertice
+  while (!IGRAPH_VIT_END(vit)) {
+    igraph_integer_t curVId = IGRAPH_VIT_GET(vit);
+    if (!(strcmp(igraph_cattribute_VAS(g, attribute_name, curVId), value))) {
+      ret = curVId;
+      break;
+    }
+    IGRAPH_VIT_NEXT(vit);
+  }
+
+  igraph_vit_destroy(&vit);
+  return ret;
+}
+
+int igraph_get_edge_id(igraph_t *g, igraph_integer_t from, igraph_integer_t to) {
+  int result = -1;
+  igraph_set_error_handler(igraph_error_handler_ignore);
+  igraph_integer_t eid;
+  
+  if(!igraph_get_eid(g, &eid, from, to, IGRAPH_DIRECTED, 1)) {
+    result = eid;
+  }
+  return result;
+}
+
+/* Add a new state/node to the ipsm if it doesn't exist */
+int igraph_add_new_node(igraph_t *g, char* newState) 
+{
+  int vId = igraph_vcount(g);
+  int existingVId = igraph_find_vertex_AS(g, "id", newState);
+  if (existingVId == -1) {
+    igraph_add_vertices(g, 1, 0);
+    SETVAS(g, "label", vId, newState);
+    SETVAS(g, "id", vId, newState);
+    SETVAN(g, "score", vId, 1.0);
+    //attach an attribute to this state/node
+    state_info_t *newState = (state_info_t *) ck_alloc(sizeof(state_info_t));
+    newState->id = vId;
+    newState->is_covered = 1;
+    newState->paths = 0;
+    newState->paths_discovered = 0;
+    newState->selected_times = 0;
+    newState->fuzzs = 0;
+    newState->score = 1;
+    newState->selected_seed_index = 0;
+    newState->seeds = NULL;
+    newState->seeds_count = 0;
+
+    khint_t k;
+    int discard;
+    k = kh_put(hms, khms_states, vId, &discard);
+    kh_value(khms_states, k) = newState;
+  } else {
+    return existingVId; //the state exists
+  }
+  return vId;
+}
+
+/* Add a new edge/transition to the ipsm if it doesn't exist */
+int igraph_add_new_edge(igraph_t *g, igraph_integer_t from, igraph_integer_t to)
+{
+  int eid = igraph_get_edge_id(g, from, to);
+  if (eid == -1) {
+    int newEId = igraph_ecount(&ipsm);
+    igraph_add_edge(g, from, to);
+    SETEAN(g, "score", newEId, 1.0);
+    //attach an attribute to this transition
+    transition_info_t *newTrans = (transition_info_t *) ck_alloc(sizeof(transition_info_t));
+    newTrans->id = newEId;
+    newTrans->khm32_seeds_messages = kh_init(hm32);
+
+    khint_t k;
+    int discard;
+    k = kh_put(hmt, khmt_transitions, newEId, &discard);
+    kh_value(khmt_transitions, k) = newTrans;
+    return newEId;
+  }
+  return eid;
+}
+
+/* Add seed_message_index pair */
+int add_seed_message_pair(int eId, int seedId, int messageId)
+{
+  khash_t(hm32) *h = NULL;
+  int ret;
+	khiter_t k;
+  if kh_exist(khmt_transitions, eId) {
+    transition_info_t *trans = (transition_info_t *) kh_value(khmt_transitions, eId);
+    if (!trans) PFATAL("TRANS should not be NULL");
+
+    h = trans->khm32_seeds_messages;
+    k = kh_put(hm32, h, seedId, &ret);
+	  kh_value(h, k) = messageId;
+  } else return 1;
+
+  return 0;
+}
+
+/* Build/update ipsm using data from a json file */
+int construct_ipsm(char* file_path)
+{
+  FILE *fp;
+  long int lSize;
+  char *buffer;
+  int status = JSON_FAULT_NONE;
+
+  fp = fopen(file_path , "rb" );
+  if(!fp ) return -1;
+
+  fseek(fp , 0L , SEEK_END);
+  lSize = ftell(fp);
+  rewind(fp);
+
+  /* allocate memory for entire content */
+  buffer = calloc(1, lSize+1);
+  if(!buffer) {
+    fclose(fp);
+    PFATAL("Cannot allocate memory to store json data");
+  }
+
+  /* copy the file into the buffer */
+  if(1 != fread(buffer, lSize, 1, fp)) {
+    fclose(fp);
+    free(buffer);
+    PFATAL("Cannot read the entire json data");
+  }
+
+  /* read json data and construct state machine */
+  const cJSON *graph = NULL;
+  const cJSON *state = NULL;
+  const cJSON *key = NULL;
+  const cJSON *parents = NULL;
+  const cJSON *dependants = NULL;
+
+  cJSON *graph_json = cJSON_Parse(buffer);
+  if (graph_json == NULL) {status = JSON_FAULT_ROOT; goto end;}
+
+  graph = cJSON_GetObjectItemCaseSensitive(graph_json, "graph");
+  if (graph == NULL) {status = JSON_FAULT_GRAPH; goto end;}
+
+  /* get the first state/node/object of the graph */  
+  state = graph->child;
+  if (state == NULL) {status = JSON_FAULT_STATE; goto end;}
+             
+  /* iterate through all states/nodes/objects of the graph */
+  while (state) {
+    cJSON *cnode = NULL;
+     
+    /* parse key to get state id */
+    key = cJSON_GetObjectItemCaseSensitive(state, "key");
+    if (key == NULL) {status = JSON_FAULT_KEY; goto end;}
+          
+    cnode = key->child;
+    if (cnode == NULL) {status = JSON_FAULT_OTHER; goto end;}
+
+    /* add a state/node to the ipsm if it doesn't exist */
+    int curStateVId = igraph_add_new_node(&ipsm, cnode->valuestring);
+
+    /* parse children (nodes/states tghat can be reached from the current one) from the graph */
+    cJSON *children = cJSON_GetObjectItemCaseSensitive(state, "children");
+    if (children == NULL) {status = JSON_FAULT_CHILDREN; goto end;}
+    
+    /* since children can be empty, we don't check if cnode is null */      
+    cnode = children->child;
+    while (cnode) {
+      // a child'id can be accessed via cnode->string
+      cJSON *child_json = cJSON_Parse(cnode->string);
+      int edgeId = -1;
+      if (child_json != NULL) {
+        cJSON *temp = cJSON_GetObjectItemCaseSensitive(child_json, "stackID");
+        if (temp != NULL) {
+          int childStateVId = igraph_add_new_node(&ipsm, temp->valuestring);
+          edgeId = igraph_add_new_edge(&ipsm, curStateVId, childStateVId);
+        }
+      }
+      cJSON_Delete(child_json);
+      
+      /* parse all seeds and corresponding messages that follow this transition */
+      cJSON *message = NULL;
+      cJSON *seed_id = NULL;
+      cJSON *message_index = NULL;
+
+      cJSON_ArrayForEach(message, cnode) {
+        seed_id = cJSON_GetObjectItemCaseSensitive(message, "key");
+        if (seed_id == NULL) {status = JSON_FAULT_OTHER; goto end;}
+            
+        message_index = cJSON_GetObjectItemCaseSensitive(message, "number_in_path");
+        if (message_index == NULL) {status = JSON_FAULT_OTHER; goto end;}
+            
+        // seed id and message_index can be accessed via seed_id->valueint and message_index->valueint
+        if (edgeId != -1) {
+          add_seed_message_pair(edgeId, seed_id->valueint, message_index->valueint);
+        }
+      }
+      cnode = cnode->next;
+    }
+
+    /* parse parents of the current node/state */
+    parents = cJSON_GetObjectItemCaseSensitive(state, "parents");
+    cJSON *parent = NULL;
+    if (parents == NULL) {status = JSON_FAULT_PARENTS; goto end;}
+        
+    cJSON_ArrayForEach(parent, parents) {
+        cJSON *stackID = NULL;
+        stackID = cJSON_GetObjectItemCaseSensitive(parent, "stackID");
+        if (stackID == NULL) {status = JSON_FAULT_OTHER; goto end;}
+            
+        // StateID of each parent can be accessed via stackID->valuedouble
+    }
+      
+    /* parse dependents of the current node/state */
+    dependants = cJSON_GetObjectItemCaseSensitive(state, "dependants");
+    cJSON *dependant = NULL;
+    if (dependants == NULL) {status = JSON_FAULT_DEPENDANTS; goto end;}
+        
+    cJSON_ArrayForEach(dependant, dependants) {
+        cJSON *stackID = NULL;
+        stackID = cJSON_GetObjectItemCaseSensitive(dependant, "stackID");
+        if (stackID == NULL) {status = JSON_FAULT_OTHER; goto end;}
+        
+        // StateID of each dependant can be accessed via stackID->valuedouble
+    }
+
+    /* parse the string-representation of the stack/state */
+      
+    /* move to the next state */
+    state = state->next;            
+  }
+
+end:
+  /* clean memory used by cJSON */
+  cJSON_Delete(graph_json);
+
+  /* close file and free the temporary buffer */
+  fclose(fp);
+  free(buffer);
+
+  /* delete graph.json */
+  if (remove(file_path)) PFATAL("Cannot delete graph.json!");
+
+  s32 fd;
+  u8* tmp;
+  tmp = alloc_printf("%s/ipsm.dot", out_dir);
+  fd = open(tmp, O_WRONLY | O_CREAT, 0600);
+  if (fd < 0) {
+    PFATAL("Unable to create %s", tmp);
+  } else {
+    ipsm_dot_file = fdopen(fd, "w");
+    igraph_write_graph_dot(&ipsm, ipsm_dot_file);
+    pclose(ipsm_dot_file);
+    ck_free(tmp);
+  }
+  return status;
 }
 
 /* Free memory allocated to state-machine variables */
 void destroy_ipsm()
 {
-  agclose(ipsm);
+  //delete all attributes before destroying the ipsm
+  DELALL(&ipsm);
+  igraph_destroy(&ipsm);
 
   kh_destroy(hs32, khs_ipsm_paths);
 
   state_info_t *state;
   kh_foreach_value(khms_states, state, {ck_free(state->seeds); ck_free(state);});
   kh_destroy(hms, khms_states);
+
+  transition_info_t *transition;
+  kh_foreach_value(khmt_transitions, transition, {kh_destroy(hm32, transition->khm32_seeds_messages); ck_free(transition);});
+  kh_destroy(hmt, khmt_transitions);
 
   ck_free(state_ids);
 }
@@ -755,8 +1047,19 @@ struct queue_entry *choose_seed(u32 target_state_id, u8 mode)
   return result;
 }
 
+void update_state_aware_variables_gfuzzer(struct queue_entry *q, u8 dry_run)
+{
+  //Check if graph.json is availabe
+  //if so, build/update ipsm
+  u8 *fname = alloc_printf("%s/graph.json", out_dir);
+  construct_ipsm(fname);
+  ck_free(fname);
+
+  //update other variables that would affect state/seed selection algos
+}
+
 /* Update state-aware variables */
-void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
+void update_state_aware_variables_orig(struct queue_entry *q, u8 dry_run)
 {
   khint_t k;
   int discard, i;
@@ -789,14 +1092,19 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
 
         //Check if the prevStateID and curStateID have been added to the state machine as vertices
         //Check also if the edge prevStateID->curStateID has been added
-        Agnode_t *from, *to;
-		    Agedge_t *edge;
-		    from = agnode(ipsm, fromState, FALSE);
-		    if (!from) {
+        int from, to;
+        from = igraph_find_vertex_AS(&ipsm, "id", fromState);
+        to = igraph_find_vertex_AS(&ipsm, "id", toState);
+
+		    if (from == -1) {
           //Add a node to the graph
-          from = agnode(ipsm, fromState, TRUE);
-          if (dry_run) agset(from,"color","blue");
-          else agset(from,"color","red");
+          int vId = igraph_vcount(&ipsm);
+          igraph_add_vertices(&ipsm, 1, 0);
+          SETVAS(&ipsm, "label", vId, fromState);
+          SETVAS(&ipsm, "id", vId, fromState);
+          SETVAN(&ipsm, "score", vId, 1.0);
+          if (dry_run) SETVAS(&ipsm, "color", vId, "blue");
+          else SETVAS(&ipsm, "color", vId, "red");
 
           //Insert this newly discovered state into the states hashtable
           state_info_t *newState_From = (state_info_t *) ck_alloc (sizeof(state_info_t));
@@ -821,12 +1129,15 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
           if (prevStateID != 0) expand_was_fuzzed_map(1, 0);
         }
 
-		    to = agnode(ipsm, toState, FALSE);
-		    if (!to) {
+		    if (to == -1) {
           //Add a node to the graph
-          to = agnode(ipsm, toState, TRUE);
-          if (dry_run) agset(to,"color","blue");
-          else agset(to,"color","red");
+          int vId = igraph_vcount(&ipsm);
+          igraph_add_vertices(&ipsm, 1, 0);
+          SETVAS(&ipsm, "label", vId, toState);
+          SETVAS(&ipsm, "id", vId, toState);
+          SETVAN(&ipsm, "score", vId, 1.0);
+          if (dry_run) SETVAS(&ipsm, "color", vId, "blue");
+          else SETVAS(&ipsm, "color", vId, "red");
 
           //Insert this newly discovered state into the states hashtable
           state_info_t *newState_To = (state_info_t *) ck_alloc (sizeof(state_info_t));
@@ -852,13 +1163,15 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
         }
 
         //Check if an edge from->to exists
-		    edge = agedge(ipsm, from, to, NULL, FALSE);
-		    if (!edge) {
-          //Add an edge to the graph
-			    edge = agedge(ipsm, from, to, "new_edge", TRUE);
-          if (dry_run) agset(edge, "color", "blue");
-          else agset(edge, "color", "red");
-		    }
+        from = igraph_find_vertex_AS(&ipsm, "id", fromState);
+        to = igraph_find_vertex_AS(&ipsm, "id", toState);
+        if (igraph_get_edge_id(&ipsm, from, to) == -1) {
+          int eId = igraph_ecount(&ipsm);
+          igraph_add_edge(&ipsm, from, to);
+          SETEAN(&ipsm, "score", eId, 1.0);
+          if (dry_run) SETEAS(&ipsm, "color", eId, "blue");
+          else SETEAS(&ipsm, "color", eId, "red");
+        }
 
         //Update prevStateID
         prevStateID = curStateID;
@@ -874,8 +1187,8 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
       PFATAL("Unable to create %s", tmp);
     } else {
       ipsm_dot_file = fdopen(fd, "w");
-      agwrite(ipsm, ipsm_dot_file);
-      close(fileno(ipsm_dot_file));
+      igraph_write_graph_dot(&ipsm, ipsm_dot_file);
+      pclose(ipsm_dot_file);
       ck_free(tmp);
     }
   }
@@ -3343,26 +3656,7 @@ static u8 run_target(char** argv, u32 timeout) {
 
 static void write_to_testcase(void* mem, u32 len) {
 
-  s32 fd = out_fd;
-
-  if (out_file) {
-
-    unlink(out_file); /* Ignore errors. */
-
-    fd = open(out_file, O_WRONLY | O_CREAT | O_EXCL, 0600);
-
-    if (fd < 0) PFATAL("Unable to create '%s'", out_file);
-
-  } else lseek(fd, 0, SEEK_SET);
-
-  ck_write(fd, mem, len, out_file);
-
-  if (!out_file) {
-
-    if (ftruncate(fd, len)) PFATAL("ftruncate() failed");
-    lseek(fd, 0, SEEK_SET);
-
-  } else close(fd);
+  //AFLNet sends data via network so it does not need this function
 
 }
 
@@ -3573,8 +3867,9 @@ static void perform_dry_run(char** argv) {
     ck_free(use_mem);
 
     /* Update state-aware variables (e.g., state machine, regions and their annotations */
-    if (state_aware_mode) update_state_aware_variables(q, 1);
-
+    if (state_aware_mode) update_state_aware_variables_orig(q, 1);
+    if (gfuzzer_mode) update_state_aware_variables_gfuzzer(q, 1);
+    
     /* save the seed to file for replaying */
     u8 *fn_replay = alloc_printf("%s/replayable-queue/%s", out_dir, basename(q->fname));
     save_kl_messages_to_file(kl_messages, fn_replay, 1, messages_sent);
@@ -4007,7 +4302,8 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     /* We use the actual length of all messages (full_len), not the len of the mutated message subsequence (len)*/
     add_to_queue(fn, full_len, 0);
 
-    if (state_aware_mode) update_state_aware_variables(queue_top, 0);
+    if (state_aware_mode) update_state_aware_variables_orig(queue_top, 0);
+    if (gfuzzer_mode) update_state_aware_variables_gfuzzer(queue_top, 0);
 
     /* save the seed to file for replaying */
     u8 *fn_replay = alloc_printf("%s/replayable-queue/%s", out_dir, basename(queue_top->fname));
@@ -7735,6 +8031,11 @@ static void sync_fuzzers(char** argv) {
 
         write_to_testcase(mem, st.st_size);
 
+        region_t *regions;
+        u32 region_count;
+        regions = (*extract_requests)(mem, st.st_size, &region_count);
+        kl_messages = construct_kl_messages(path, regions, region_count);
+
         fault = run_target(argv, exec_tmout);
 
         if (stop_soon) return;
@@ -7745,6 +8046,10 @@ static void sync_fuzzers(char** argv) {
         syncing_party = sd_ent->d_name;
         queued_imported += save_if_interesting(argv, mem, st.st_size, fault);
         syncing_party = 0;
+
+        /* AFLNet delete the kl_messages */
+        ck_free(regions);
+        delete_kl_messages(kl_messages);
 
         /* AFLNet: unset this flag to disable request extractions while adding new seed to the queue */
         corpus_read_or_sync = 0;
@@ -8772,7 +9077,7 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QN:D:W:w:P:KEq:s:RFc:l:")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QN:D:W:w:P:KEq:s:RFc:l:G")) > 0)
 
     switch (opt) {
 
@@ -9020,6 +9325,11 @@ int main(int argc, char** argv) {
       case 'E':
         if (state_aware_mode) FATAL("Multiple -E options not supported");
         state_aware_mode = 1;
+        break;
+
+      case 'G':
+        if (gfuzzer_mode) FATAL("Multiple -G options not supported");
+        gfuzzer_mode = 1;
         break;
 
       case 'q': /* state selection option */
