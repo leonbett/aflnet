@@ -1187,7 +1187,10 @@ struct queue_entry *choose_seed_gfuzzer(path_t *selected_path, u8 mode, int *mid
         k = kl_next(k);
       }
 
-      result = &queue[kl_val(k)->a];
+      result = queue;
+      for (int i = 0; i < kl_val(k)->a; i++) {
+        result = result->next;
+      }
       *mid = kl_val(k)->b;
       break;
     case ROUND_ROBIN:
