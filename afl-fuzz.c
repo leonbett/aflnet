@@ -409,6 +409,7 @@ u8 path_selection_algo = RANDOM_SELECTION;
 u8 seed_selection_algo = RANDOM_SELECTION;
 u8 false_negative_reduction = 0;
 u8 gfuzzer_mode = 0;
+u8 gfuzzer_ipsm_exploration = 0;
 
 int gfuzzer_selected_message_id = 0;
 
@@ -6459,7 +6460,7 @@ AFLNET_REGIONS_SELECTION:;
       //Handle corner case(s) and skip the current queue entry
       if (M2_start_region_ID >= queue_cur->region_count) return 1;
     }
-  } else if (gfuzzer_mode) {
+  } else if (gfuzzer_ipsm_exploration) {
     u32 total_region = queue_cur->region_count;
     if (total_region == 0) PFATAL("0 region found for %s", queue_cur->fname);
 
@@ -9877,6 +9878,8 @@ int main(int argc, char** argv) {
         /* choose a seed that follows the selected path */
         selected_seed = choose_seed_gfuzzer(selected_path, seed_selection_algo, &gfuzzer_selected_message_id);
       }
+
+      gfuzzer_ipsm_exploration = 1;
 
       /* Seek to the selected seed */
       if (selected_seed) {
