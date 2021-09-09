@@ -33,11 +33,22 @@ typedef struct {
   u32 seeds_count;            /* total number of seeds, it must be equal the size of the seeds array */
 } state_info_t;
 
-KHASH_INIT(hm32, khint32_t, khint32_t, 1, kh_int_hash_func, kh_int_hash_equal)
+typedef struct {
+  int *nodes; /* node ids */
+  int count;  /* #nodes in the path */
+} path_t;
+
+typedef struct {
+  int a; 
+  int b;
+} pair_t;
+
+#define pair_t_freer(x)
+KLIST_INIT(lpr, pair_t *, pair_t_freer)
 
 typedef struct {
   u32 id;       /* transition id */
-  khash_t(hm32) *khm32_seeds_messages;
+  klist_t(lpr) *seed_message_pairs;
 } transition_info_t;
 
 enum {
@@ -55,6 +66,9 @@ enum {
 // Initialize klist linked list data structure
 #define message_t_freer(x)
 KLIST_INIT(lms, message_t *, message_t_freer)
+
+#define path_t_freer(x)
+KLIST_INIT(lp, path_t *, path_t_freer)
 
 KHASH_SET_INIT_INT(hs32)
 

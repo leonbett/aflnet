@@ -68,7 +68,6 @@
 #include <sys/file.h>
 
 #include "aflnet.h"
-#include <graphviz/gvc.h>
 #include <math.h>
 #include <igraph/igraph.h>
 #include "cJSON.h"
@@ -405,9 +404,13 @@ u8 terminate_child = 0;
 u8 corpus_read_or_sync = 0;
 u8 state_aware_mode = 0;
 u8 region_level_mutation = 0;
-u8 state_selection_algo = ROUND_ROBIN, seed_selection_algo = RANDOM_SELECTION;
+u8 state_selection_algo = ROUND_ROBIN;
+u8 path_selection_algo = RANDOM_SELECTION;
+u8 seed_selection_algo = RANDOM_SELECTION;
 u8 false_negative_reduction = 0;
 u8 gfuzzer_mode = 0;
+
+int gfuzzer_selected_message_id = 0;
 
 /* Implemented state machine */
 igraph_t  ipsm;
@@ -506,6 +509,10 @@ int igraph_add_new_node(igraph_t *g, char* newState)
     int discard;
     k = kh_put(hms, khms_states, vId, &discard);
     kh_value(khms_states, k) = newState;
+
+    //Insert this into the state_ids array too
+    state_ids = (u32 *) ck_realloc(state_ids, (state_ids_count + 1) * sizeof(u32));
+    state_ids[state_ids_count++] = vId;
   } else {
     return existingVId; //the state exists
   }
@@ -523,7 +530,7 @@ int igraph_add_new_edge(igraph_t *g, igraph_integer_t from, igraph_integer_t to)
     //attach an attribute to this transition
     transition_info_t *newTrans = (transition_info_t *) ck_alloc(sizeof(transition_info_t));
     newTrans->id = newEId;
-    newTrans->khm32_seeds_messages = kh_init(hm32);
+    newTrans->seed_message_pairs = kl_init(lpr);
 
     khint_t k;
     int discard;
@@ -534,22 +541,145 @@ int igraph_add_new_edge(igraph_t *g, igraph_integer_t from, igraph_integer_t to)
   return eid;
 }
 
+/* Add a new pair to a given list */
+int add_new_pair(klist_t(lpr) *kl_pairs, pair_t *new_pair)
+{
+  kliter_t(lpr) *it;
+  it = kl_begin(kl_pairs);
+  while (it != kl_end(kl_pairs)) {
+    //check if the given pair exists
+    if ((kl_val(it)->a == new_pair->a) && (kl_val(it)->b == new_pair->b)) {
+      return 1;
+    }
+    it = kl_next(it);
+  }
+  
+  *kl_pushp(lpr, kl_pairs) = new_pair;
+  return 0;
+}
+
 /* Add seed_message_index pair */
 int add_seed_message_pair(int eId, int seedId, int messageId)
 {
-  khash_t(hm32) *h = NULL;
-  int ret;
-	khiter_t k;
   if kh_exist(khmt_transitions, eId) {
     transition_info_t *trans = (transition_info_t *) kh_value(khmt_transitions, eId);
     if (!trans) PFATAL("TRANS should not be NULL");
-
-    h = trans->khm32_seeds_messages;
-    k = kh_put(hm32, h, seedId, &ret);
-	  kh_value(h, k) = messageId;
+    
+    pair_t *new_pair = (pair_t *)malloc(sizeof(pair_t));
+    new_pair->a = seedId;
+    new_pair->b = messageId;
+    add_new_pair(trans->seed_message_pairs, new_pair);
   } else return 1;
 
   return 0;
+}
+
+/* free memory and destroy a list of paths */
+void destroy_paths(klist_t(lp)* kl_paths) {
+  path_t *p;
+  int ret = kl_shift(lp, kl_paths, &p);
+  while (ret == 0) {
+    if (p) {
+      ck_free(p->nodes);
+      ck_free(p);
+    }
+    ret = kl_shift(lp, kl_paths, &p);
+  }
+  /* Finally, destroy the list */
+	kl_destroy(lp, kl_paths);
+}
+
+/* Get all simple paths from a state/node to another state/node */
+klist_t(lp)* get_simple_paths(igraph_t g, int sid, int did) {
+  igraph_vs_t vs;
+
+  //vs is a set of vertices
+  igraph_vs_1(&vs, did);
+
+  //vi is a int vector containing paths separated by -1
+  //ref: https://igraph.org/c/doc/igraph-Structural.html#igraph_get_all_simple_paths
+  igraph_vector_int_t vi;
+  igraph_vector_int_init(&vi, 0);
+
+  //initialize a list of paths
+  klist_t(lp) *kl_paths = kl_init(lp);
+  igraph_get_all_simple_paths(&g, &vi, sid, vs, -1, IGRAPH_OUT);
+
+  if (!igraph_vector_empty((const struct igraph_vector_t *)&vi)) {
+    path_t *path = (path_t *) ck_alloc(sizeof(path_t));
+    path->nodes = NULL;
+    path->count = 0;
+
+    int icount = igraph_vector_capacity((const struct igraph_vector_t *)&vi);
+    for (int i = 0; i <= icount; i++) {
+      if (VECTOR(vi)[i] == -1) {
+        //end of a path
+        *kl_pushp(lp, kl_paths) = path;
+        if (i < icount) {
+          path = (path_t *) ck_alloc(sizeof(path_t));
+          path->nodes = NULL;
+          path->count = 0;
+        }
+      } else {
+        path->nodes = ck_realloc(path->nodes, (path->count + 1) * sizeof(int));
+        path->nodes[path->count] = VECTOR(vi)[i];
+        path->count++;
+      }
+    }
+  }
+
+  igraph_vs_destroy(&vs);
+  igraph_vector_int_destroy(&vi);
+
+  return kl_paths;
+}
+
+/* free memory and destroy a list of edges */
+void destroy_edges(klist_t(lpr)* kl_edges) {
+  pair_t *e;
+  int ret = kl_shift(lpr, kl_edges, &e);
+  while (ret == 0) {
+    if (e) {
+      ck_free(e);
+    }
+    ret = kl_shift(lpr, kl_edges, &e);
+  }
+  /* Finally, destroy the list */
+	kl_destroy(lpr, kl_edges);
+}
+
+/* get a list of outgoing edges from a state/node */
+klist_t(lpr)* get_out_edges(igraph_t g, int vid, int self_transition) {
+  igraph_es_t es;  //edge selector
+  igraph_eit_t ei; //edge iterator
+
+  //initialize a list of paths
+  klist_t(lpr) *kl_edges = kl_init(lpr);
+
+  int result = igraph_es_incident(&es, vid, IGRAPH_OUT);
+  if(result != IGRAPH_SUCCESS) goto end;
+
+  result = igraph_eit_create(&g, es, &ei);
+  if(result != IGRAPH_SUCCESS) goto end;
+
+  while (!IGRAPH_EIT_END(ei)) {
+    int sid = IGRAPH_FROM(&g, IGRAPH_EIT_GET(ei));
+    int did = IGRAPH_TO(&g, IGRAPH_EIT_GET(ei));
+    if ((!self_transition) && (sid == did)) {
+      IGRAPH_EIT_NEXT(ei);
+      continue;
+    }
+    pair_t *edge = (pair_t *) ck_alloc(sizeof(pair_t));
+    edge->a = sid;
+    edge->b = did;
+    *kl_pushp(lpr, kl_edges) = edge;
+    IGRAPH_EIT_NEXT(ei);
+  }
+  
+end:
+  igraph_eit_destroy(&ei);
+  igraph_es_destroy(&es);
+  return kl_edges;
 }
 
 /* Build/update ipsm using data from a json file */
@@ -723,7 +853,7 @@ void destroy_ipsm()
   kh_destroy(hms, khms_states);
 
   transition_info_t *transition;
-  kh_foreach_value(khmt_transitions, transition, {kh_destroy(hm32, transition->khm32_seeds_messages); ck_free(transition);});
+  kh_foreach_value(khmt_transitions, transition, {kl_destroy(lpr, transition->seed_message_pairs); ck_free(transition);});
   kh_destroy(hmt, khmt_transitions);
 
   ck_free(state_ids);
@@ -965,6 +1095,106 @@ unsigned int choose_target_state(u8 mode) {
       break;
   }
 
+  return result;
+}
+
+/* Select a target state at which we do state-aware fuzzing (gFuzzer mode)*/
+unsigned int choose_target_state_gfuzzer(u8 mode) {
+  u32 result = 0;
+
+  switch (mode) {
+    case RANDOM_SELECTION: //Random state selection
+      selected_state_index = UR(state_ids_count);
+      result = state_ids[selected_state_index];
+      break;
+    case ROUND_ROBIN: //Roud-robin state selection
+      result = state_ids[selected_state_index];
+      selected_state_index++;
+      if (selected_state_index == state_ids_count) selected_state_index = 0;
+      break;
+    default:
+      break;
+  }
+
+  return result;
+}
+
+path_t *copy_path(path_t *orig_path)
+{
+  path_t *result = NULL;
+  result = (path_t *) ck_alloc(sizeof(path_t));
+  result->nodes = (int *) ck_alloc(orig_path->count * sizeof(int));
+  memcpy(result->nodes, orig_path->nodes, orig_path->count * sizeof(int));
+  result->count = orig_path->count;
+  return result;
+}
+
+/* Select a path */
+path_t *choose_path_gfuzzer(u32 target_state_id, u8 mode)
+{
+  path_t *result = NULL;
+  //get all paths from the root state/node to the target state
+  klist_t(lp) *kl_paths = get_simple_paths(ipsm, 0, target_state_id);
+  int pid = 0;
+  kliter_t(lp) *ki = NULL;
+  switch (mode) {
+    case RANDOM_SELECTION: //Random path selection
+      pid = UR(kl_paths->size);
+      ki = kl_begin(kl_paths);
+      for (int i = 0; i < pid; i++) {
+        ki = kl_next(ki);
+      }
+      result = copy_path(ki->data); 
+      break;
+    case ROUND_ROBIN:
+      PFATAL("This path selection algorithm has not been implemented yet!!!");
+      break;
+    default:
+      PFATAL("This path selection algorithm has not been implemented yet!!!");
+      break;
+  }
+  
+  destroy_paths(kl_paths);
+  return result;
+}
+
+/* Select a seed */
+struct queue_entry *choose_seed_gfuzzer(path_t *selected_path, u8 mode, int *mid)
+{
+  struct queue_entry *result = NULL;
+  int count, eid, qid;
+  transition_info_t *trans = NULL;
+  klist_t(lpr) *kl_pairs = NULL;
+  kliter_t(lpr) *k = NULL;
+
+  switch (mode) {
+    case RANDOM_SELECTION: //Random seed selection
+      //get the attribute attached to the last edge/transition
+      count = selected_path->count;
+      eid = igraph_get_edge_id(&ipsm, selected_path->nodes[count - 2], selected_path->nodes[count - 1]);
+      if (eid == -1) PFATAL("The edge does not exist");
+
+      trans = (transition_info_t *) kh_value(khmt_transitions, eid);
+      if (trans == NULL) PFATAL("The trans does not exist");
+      
+      kl_pairs = trans->seed_message_pairs;
+
+      qid = UR(kl_pairs->size);
+      
+      k = kl_begin(kl_pairs);
+      for (int i = 0; i < qid; i++) {
+        k = kl_next(k);
+      }
+
+      result = &queue[kl_val(k)->a];
+      *mid = kl_val(k)->b;
+      break;
+    case ROUND_ROBIN:
+      PFATAL("This seed selection algorithm has not been implemented yet!!!");
+      break;
+    default:
+      break;
+  }
   return result;
 }
 
@@ -2491,9 +2721,9 @@ static void cull_queue(void) {
       top_rated[i]->favored = 1;
       queued_favored++;
 
-      //if (!top_rated[i]->was_fuzzed) pending_favored++;
+      if (!top_rated[i]->was_fuzzed) pending_favored++;
       /* AFLNet takes into account more information to make this decision */
-      if ((top_rated[i]->generating_state_id == target_state_id || top_rated[i]->is_initial_seed) && (was_fuzzed_map[get_state_index(target_state_id)][top_rated[i]->index] == 0)) pending_favored++;
+      //if ((top_rated[i]->generating_state_id == target_state_id || top_rated[i]->is_initial_seed) && (was_fuzzed_map[get_state_index(target_state_id)][top_rated[i]->index] == 0)) pending_favored++;
 
     }
 
@@ -6137,7 +6367,7 @@ static u8 fuzz_one(char** argv) {
 
   //Skip some steps if in state_aware_mode because in this mode
   //the seed is selected based on state-aware algorithms
-  if (state_aware_mode) goto AFLNET_REGIONS_SELECTION;
+  if ((state_aware_mode) || (gfuzzer_mode && igraph_vcount(&ipsm) > 0))  goto AFLNET_REGIONS_SELECTION;
 
   if (pending_favored) {
 
@@ -6229,6 +6459,13 @@ AFLNET_REGIONS_SELECTION:;
       //Handle corner case(s) and skip the current queue entry
       if (M2_start_region_ID >= queue_cur->region_count) return 1;
     }
+  } else if (gfuzzer_mode) {
+    u32 total_region = queue_cur->region_count;
+    if (total_region == 0) PFATAL("0 region found for %s", queue_cur->fname);
+
+    M2_start_region_ID = gfuzzer_selected_message_id + 1;
+    M2_region_count = UR(total_region - M2_start_region_ID);
+    if (M2_region_count == 0) M2_region_count++;
   } else {
     /* Select M2 randomly */
     u32 total_region = queue_cur->region_count;
@@ -9077,7 +9314,7 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QN:D:W:w:P:KEq:s:RFc:l:G")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QN:D:W:w:P:KEq:p:s:RFc:l:G")) > 0)
 
     switch (opt) {
 
@@ -9339,6 +9576,10 @@ int main(int argc, char** argv) {
         if (sscanf(optarg, "%hhu", &state_selection_algo) < 1 || optarg[0] == '-') FATAL("Bad syntax used for -q");
         break;
 
+      case 'p': /* path selection option */
+        if (sscanf(optarg, "%hhu", &path_selection_algo) < 1 || optarg[0] == '-') FATAL("Bad syntax used for -p");
+        break;
+
       case 's': /* seed selection option */
         if (sscanf(optarg, "%hhu", &seed_selection_algo) < 1 || optarg[0] == '-') FATAL("Bad syntax used for -s");
         break;
@@ -9542,6 +9783,134 @@ int main(int argc, char** argv) {
       if (stop_soon) break;
     }
 
+  } else if (gfuzzer_mode) {
+    //start with "non-state-aware mode" i.e. M2 is randomly selected
+    //switch to "state-aware mode" when the ipsm has been constructed
+    while (igraph_vcount(&ipsm) == 0) {
+      u8 skipped_fuzz;
+
+      cull_queue();
+
+      if (!queue_cur) {
+
+        queue_cycle++;
+        current_entry     = 0;
+        cur_skipped_paths = 0;
+        queue_cur         = queue;
+
+        while (seek_to) {
+          current_entry++;
+          seek_to--;
+          queue_cur = queue_cur->next;
+        }
+
+        show_stats();
+
+        if (not_on_tty) {
+          ACTF("Entering queue cycle %llu.", queue_cycle);
+          fflush(stdout);
+        }
+
+        /* If we had a full queue cycle with no new finds, try
+           recombination strategies next. */
+
+        if (queued_paths == prev_queued) {
+
+          if (use_splicing) cycles_wo_finds++; else use_splicing = 1;
+
+        } else cycles_wo_finds = 0;
+
+        prev_queued = queued_paths;
+
+        if (sync_id && queue_cycle == 1 && getenv("AFL_IMPORT_FIRST"))
+          sync_fuzzers(use_argv);
+
+      }
+
+      skipped_fuzz = fuzz_one(use_argv);
+
+      if (!stop_soon && sync_id && !skipped_fuzz) {
+
+        if (!(sync_interval_cnt++ % SYNC_INTERVAL))
+          sync_fuzzers(use_argv);
+
+      }
+
+      if (!stop_soon && exit_1) stop_soon = 2;
+
+      if (stop_soon) break;
+
+      queue_cur = queue_cur->next;
+      current_entry++;
+    }
+
+    if (state_ids_count == 0) {
+      PFATAL("No server states have been detected. Something might be wrong in the IPSM construction!");
+    }
+
+    while (1) {
+      u8 skipped_fuzz;
+
+      struct queue_entry *selected_seed = NULL;
+      while(!selected_seed || selected_seed->region_count == 0) {
+        /* choose a state */
+        target_state_id = choose_target_state_gfuzzer(state_selection_algo);
+        klist_t(lpr) *kl_edges = get_out_edges(ipsm, target_state_id, 0);
+        if (kl_edges->size == 0) {
+          destroy_edges(kl_edges);
+          continue;
+        }
+        destroy_edges(kl_edges);
+        /* Update favorites based on the selected state */
+        cull_queue();
+
+        /* Update number of times a state has been selected for targeted fuzzing */
+        khint_t k = kh_get(hms, khms_states, target_state_id);
+        if (k != kh_end(khms_states)) {
+          kh_val(khms_states, k)->selected_times++;
+        }
+
+        /* choose a path to reach that state on the IPSM */
+        path_t *selected_path = choose_path_gfuzzer(target_state_id, path_selection_algo);
+        if (selected_path == NULL) continue;
+
+        /* choose a seed that follows the selected path */
+        selected_seed = choose_seed_gfuzzer(selected_path, seed_selection_algo, &gfuzzer_selected_message_id);
+      }
+
+      /* Seek to the selected seed */
+      if (selected_seed) {
+        if (!queue_cur) {
+            current_entry     = 0;
+            cur_skipped_paths = 0;
+            queue_cur         = queue;
+            queue_cycle++;
+        }
+        while (queue_cur != selected_seed) {
+          queue_cur = queue_cur->next;
+          current_entry++;
+          if (!queue_cur) {
+            current_entry     = 0;
+            cur_skipped_paths = 0;
+            queue_cur         = queue;
+            queue_cycle++;
+          }
+        }
+      }
+
+      skipped_fuzz = fuzz_one(use_argv);
+
+      if (!stop_soon && sync_id && !skipped_fuzz) {
+
+        if (!(sync_interval_cnt++ % SYNC_INTERVAL))
+          sync_fuzzers(use_argv);
+
+      }
+
+      if (!stop_soon && exit_1) stop_soon = 2;
+
+      if (stop_soon) break;
+    }
   } else {
     while (1) {
 
