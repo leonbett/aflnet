@@ -70,6 +70,7 @@
 #include "aflnet.h"
 #include <math.h>
 #include <igraph/igraph.h>
+#include <gsl/gsl_randist.h>
 #include "cJSON.h"
 
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined (__OpenBSD__)
@@ -502,6 +503,8 @@ int igraph_add_new_node(igraph_t *g, char *newState) {
     newState->selected_times = 0;
     newState->sample_count = 0;
     newState->reward_count = 0;
+    newState->alpha = 1;
+    newState->beta = 1;
     newState->fuzzs = 0;
     newState->score = 1;
     newState->selected_seed_index = 0;
@@ -1135,7 +1138,7 @@ unsigned int choose_target_state_gfuzzer(u8 mode) {
       double maxQ = 0;
       // Calculate estimated Q function
       for (size_t i = 0; i < state_ids_count; ++i) {
-        khint_t k = kh_get(hms, khms_states, state_ids[selected_state_index]);
+        khint_t k = kh_get(hms, khms_states, state_ids[i]);
         double Q = .0;
         if (k != kh_end(khms_states)) {
           if (kh_val(khms_states, k)->sample_count > 0) {
@@ -1146,6 +1149,22 @@ unsigned int choose_target_state_gfuzzer(u8 mode) {
         if (maxQ < Q) {
           maxQ = Q;
           maxI = i;
+        }
+      }
+      result = state_ids[maxI];
+      break;
+    }
+    case MAB_THOMPSON: {
+      size_t maxI = 0;
+      double maxSample = 0;
+      for (size_t i = 0; i < state_ids_count; ++i) {
+        khint_t k = kh_get(hms, khms_states, state_ids[i]);
+        if (k != kh_end(khms_states)) {
+          double sample = gsl_ran_beta(NULL, kh_val(khms_states, k)->alpha, kh_val(khms_states, k)->beta);
+          if (maxSample < sample) {
+            maxSample = sample;
+            maxI = i;
+          }
         }
       }
       result = state_ids[maxI];
@@ -4584,10 +4603,16 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
-
+    khint_t k = kh_get(hms, khms_states, state_ids[selected_state_index]);
     if (!(hnb = has_new_bits(virgin_bits))) {
+      if (k != kh_end(khms_states)) {
+        kh_val(khms_states, k)->beta++;
+      }
       if (crash_mode) total_crashes++;
       return 0;
+    }
+    if (k != kh_end(khms_states)) {
+      kh_val(khms_states, k)->alpha++;
     }
 
 #ifndef SIMPLE_FILES
