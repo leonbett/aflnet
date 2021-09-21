@@ -64,6 +64,9 @@ enum {
   /* 02 */ ROUND_ROBIN,
   /* 03 */ FAVOR,
   /* 04 */ MAB_UCB1,
+  /* 05 */ MAB_THOMPSON,
+  /* 06 */ MAB_E_GREEDY,
+  /* 07 */ IN_OUT_EDGE_WEIGHTING
 };
 
 // Initialize klist linked list data structure
