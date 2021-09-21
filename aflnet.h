@@ -28,6 +28,8 @@ typedef struct {
   u32 selected_times;         /* total number of times this state has been targeted/selected */
   u32 sample_count;           /* Number of times this state was sampled (see MAB selection algorithm)*/
   u32 reward_count;           /* Number of times this state produced a reward (see MAB selection algorithm)*/
+  u32 alpha;
+  u32 beta;
   u32 fuzzs;                  /* Total number of fuzzs (i.e., inputs generated) */
   u32 score;                  /* current score of the state */
   u32 selected_seed_index;    /* the recently selected seed index */
