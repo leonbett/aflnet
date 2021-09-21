@@ -1143,12 +1143,36 @@ unsigned int choose_target_state_gfuzzer(u8 mode) {
           }
         }
         Q += sqrt(2 * log(total_samples) / (1 + kh_val(khms_states, k)->sample_count));
-        if(maxQ < Q) {
+        if (maxQ < Q) {
           maxQ = Q;
           maxI = i;
         }
       }
       result = state_ids[maxI];
+      break;
+    }
+    case IN_OUT_EDGE_WEIGHTING: {
+      // Out >> IN => likely candidate for interesting behavior, because many different states reachable?
+      // IN >> OUT => likely candidate for finding interesting behavior because many states lead to this state?
+      // The first case would correspond to a branching point in the program.
+      // The second case could be some kind of error state which also might be interesting.
+      // Maybe find typical ratio of in and out to use for the midpoint of the curve?
+      double L = 100;
+      // Prefix sum in order to random sample
+      u32 *scores = ck_alloc(sizeof(u32) * state_ids_count);
+      for (size_t i = 0; i < state_ids_count; ++i) {
+        igraph_vector_t v;
+        igraph_vector_init(&v, 1);
+        igraph_degree(&ipsm, &v, igraph_vss_1((int) state_ids[i]), IGRAPH_IN, IGRAPH_NO_LOOPS);
+        double score = (double) VECTOR(v)[0];
+        igraph_degree(&ipsm, &v, igraph_vss_1((int) state_ids[i]), IGRAPH_OUT, IGRAPH_NO_LOOPS);
+        score -= (double) VECTOR(v)[0];
+        score = 1. + exp(-0.5 * fabs(score));
+        score = (L / score) - (L / 2);
+        scores[i] = (u32) score + (i > 0 ? scores[i - 1] : 0);
+        igraph_vector_destroy(&v);
+      }
+      result = state_ids[index_search(scores, state_ids_count, UR(scores[state_ids_count - 1]))];
       break;
     }
     default:
