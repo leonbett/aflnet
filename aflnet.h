@@ -26,6 +26,8 @@ typedef struct {
   u32 paths;                  /* total number of paths exercising this state */
   u32 paths_discovered;       /* total number of new paths that have been discovered when this state is targeted/selected */
   u32 selected_times;         /* total number of times this state has been targeted/selected */
+  u32 sample_count;           /* Number of times this state was sampled (see MAB selection algorithm)*/
+  u32 reward_count;           /* Number of times this state produced a reward (see MAB selection algorithm)*/
   u32 fuzzs;                  /* Total number of fuzzs (i.e., inputs generated) */
   u32 score;                  /* current score of the state */
   u32 selected_seed_index;    /* the recently selected seed index */
@@ -60,7 +62,8 @@ enum {
   /* 00 */ INVALID_SELECTION,
   /* 01 */ RANDOM_SELECTION,
   /* 02 */ ROUND_ROBIN,
-  /* 03 */ FAVOR
+  /* 03 */ FAVOR,
+  /* 04 */ MAB_UCB1,
 };
 
 // Initialize klist linked list data structure
