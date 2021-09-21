@@ -393,6 +393,7 @@ u32 fuzzed_map_states = 0;
 u32 fuzzed_map_qentries = 0;
 u32 max_seed_region_count = 0;
 u32 local_port;		/* TCP/UDP port number to use as source */
+u32 total_samples = 0;
 
 /* flags */
 u8 use_net = 0;
@@ -447,7 +448,7 @@ void setup_ipsm()
 }
 
 /* ipsm supporting functions */
-igraph_integer_t igraph_find_vertex_AS(igraph_t *g, char* attribute_name, char* value ) { 
+igraph_integer_t igraph_find_vertex_AS(igraph_t *g, char *attribute_name, char *value) {
   igraph_integer_t ret = -1;
   igraph_vs_t vs;
 
@@ -476,7 +477,7 @@ int igraph_get_edge_id(igraph_t *g, igraph_integer_t from, igraph_integer_t to) 
   int result = -1;
   igraph_set_error_handler(igraph_error_handler_ignore);
   igraph_integer_t eid;
-  
+
   if(!igraph_get_eid(g, &eid, from, to, IGRAPH_DIRECTED, 1)) {
     result = eid;
   }
@@ -484,8 +485,7 @@ int igraph_get_edge_id(igraph_t *g, igraph_integer_t from, igraph_integer_t to) 
 }
 
 /* Add a new state/node to the ipsm if it doesn't exist */
-int igraph_add_new_node(igraph_t *g, char* newState) 
-{
+int igraph_add_new_node(igraph_t *g, char *newState) {
   int vId = igraph_vcount(g);
   int existingVId = igraph_find_vertex_AS(g, "id", newState);
   if (existingVId == -1) {
@@ -500,6 +500,8 @@ int igraph_add_new_node(igraph_t *g, char* newState)
     newState->paths = 0;
     newState->paths_discovered = 0;
     newState->selected_times = 0;
+    newState->sample_count = 0;
+    newState->reward_count = 0;
     newState->fuzzs = 0;
     newState->score = 1;
     newState->selected_seed_index = 0;
@@ -554,7 +556,7 @@ int add_new_pair(klist_t(lpr) *kl_pairs, pair_t *new_pair)
     }
     it = kl_next(it);
   }
-  
+
   *kl_pushp(lpr, kl_pairs) = new_pair;
   return 0;
 }
@@ -565,7 +567,7 @@ int add_seed_message_pair(int eId, int seedId, int messageId)
   if kh_exist(khmt_transitions, eId) {
     transition_info_t *trans = (transition_info_t *) kh_value(khmt_transitions, eId);
     if (!trans) PFATAL("TRANS should not be NULL");
-    
+
     pair_t *new_pair = (pair_t *)malloc(sizeof(pair_t));
     new_pair->a = seedId;
     new_pair->b = messageId;
@@ -676,7 +678,7 @@ klist_t(lpr)* get_out_edges(igraph_t g, int vid, int self_transition) {
     *kl_pushp(lpr, kl_edges) = edge;
     IGRAPH_EIT_NEXT(ei);
   }
-  
+
 end:
   igraph_eit_destroy(&ei);
   igraph_es_destroy(&es);
@@ -725,29 +727,38 @@ int construct_ipsm(char* file_path)
   graph = cJSON_GetObjectItemCaseSensitive(graph_json, "graph");
   if (graph == NULL) {status = JSON_FAULT_GRAPH; goto end;}
 
-  /* get the first state/node/object of the graph */  
+  /* get the first state/node/object of the graph */
   state = graph->child;
   if (state == NULL) {status = JSON_FAULT_STATE; goto end;}
-             
+
   /* iterate through all states/nodes/objects of the graph */
   while (state) {
     cJSON *cnode = NULL;
-     
+
     /* parse key to get state id */
     key = cJSON_GetObjectItemCaseSensitive(state, "key");
-    if (key == NULL) {status = JSON_FAULT_KEY; goto end;}
-          
+    if (key == NULL) {
+      status = JSON_FAULT_KEY;
+      goto end;
+    }
+
     cnode = key->child;
-    if (cnode == NULL) {status = JSON_FAULT_OTHER; goto end;}
+    if (cnode == NULL) {
+      status = JSON_FAULT_OTHER;
+      goto end;
+    }
 
     /* add a state/node to the ipsm if it doesn't exist */
     int curStateVId = igraph_add_new_node(&ipsm, cnode->valuestring);
 
     /* parse children (nodes/states tghat can be reached from the current one) from the graph */
     cJSON *children = cJSON_GetObjectItemCaseSensitive(state, "children");
-    if (children == NULL) {status = JSON_FAULT_CHILDREN; goto end;}
-    
-    /* since children can be empty, we don't check if cnode is null */      
+    if (children == NULL) {
+      status = JSON_FAULT_CHILDREN;
+      goto end;
+    }
+
+    /* since children can be empty, we don't check if cnode is null */
     cnode = children->child;
     while (cnode) {
       // a child'id can be accessed via cnode->string
@@ -761,7 +772,7 @@ int construct_ipsm(char* file_path)
         }
       }
       cJSON_Delete(child_json);
-      
+
       /* parse all seeds and corresponding messages that follow this transition */
       cJSON *message = NULL;
       cJSON *seed_id = NULL;
@@ -770,10 +781,10 @@ int construct_ipsm(char* file_path)
       cJSON_ArrayForEach(message, cnode) {
         seed_id = cJSON_GetObjectItemCaseSensitive(message, "key");
         if (seed_id == NULL) {status = JSON_FAULT_OTHER; goto end;}
-            
+
         message_index = cJSON_GetObjectItemCaseSensitive(message, "number_in_path");
         if (message_index == NULL) {status = JSON_FAULT_OTHER; goto end;}
-            
+
         // seed id and message_index can be accessed via seed_id->valueint and message_index->valueint
         if (edgeId != -1) {
           add_seed_message_pair(edgeId, seed_id->valueint, message_index->valueint);
@@ -786,32 +797,38 @@ int construct_ipsm(char* file_path)
     parents = cJSON_GetObjectItemCaseSensitive(state, "parents");
     cJSON *parent = NULL;
     if (parents == NULL) {status = JSON_FAULT_PARENTS; goto end;}
-        
+
     cJSON_ArrayForEach(parent, parents) {
-        cJSON *stackID = NULL;
-        stackID = cJSON_GetObjectItemCaseSensitive(parent, "stackID");
-        if (stackID == NULL) {status = JSON_FAULT_OTHER; goto end;}
-            
-        // StateID of each parent can be accessed via stackID->valuedouble
+      cJSON *stackID = NULL;
+      stackID = cJSON_GetObjectItemCaseSensitive(parent, "stackID");
+      if (stackID == NULL) {
+        status = JSON_FAULT_OTHER;
+        goto end;
+      }
+
+      // StateID of each parent can be accessed via stackID->valuedouble
     }
-      
+
     /* parse dependents of the current node/state */
     dependants = cJSON_GetObjectItemCaseSensitive(state, "dependants");
     cJSON *dependant = NULL;
     if (dependants == NULL) {status = JSON_FAULT_DEPENDANTS; goto end;}
-        
+
     cJSON_ArrayForEach(dependant, dependants) {
-        cJSON *stackID = NULL;
-        stackID = cJSON_GetObjectItemCaseSensitive(dependant, "stackID");
-        if (stackID == NULL) {status = JSON_FAULT_OTHER; goto end;}
-        
-        // StateID of each dependant can be accessed via stackID->valuedouble
+      cJSON *stackID = NULL;
+      stackID = cJSON_GetObjectItemCaseSensitive(dependant, "stackID");
+      if (stackID == NULL) {
+        status = JSON_FAULT_OTHER;
+        goto end;
+      }
+
+      // StateID of each dependant can be accessed via stackID->valuedouble
     }
 
     /* parse the string-representation of the stack/state */
-      
+
     /* move to the next state */
-    state = state->next;            
+    state = state->next;
   }
 
 end:
@@ -989,7 +1006,7 @@ u8* choose_source_region(u32 *out_len) {
 /* Update #fuzzs visiting a specific state */
 void update_fuzzs() {
   unsigned int state_count, i, discard;
-  unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
+  unsigned int *state_sequence = extract_response_codes(response_buf, response_buf_size, &state_count);
 
   //A hash set is used so that the #paths is not updated more than once for one specific state
   khash_t(hs32) *khs_state_ids;
@@ -1113,6 +1130,27 @@ unsigned int choose_target_state_gfuzzer(u8 mode) {
       selected_state_index++;
       if (selected_state_index == state_ids_count) selected_state_index = 0;
       break;
+    case MAB_UCB1: {
+      size_t maxI = 0;
+      double maxQ = 0;
+      // Calculate estimated Q function
+      for (size_t i = 0; i < state_ids_count; ++i) {
+        khint_t k = kh_get(hms, khms_states, state_ids[selected_state_index]);
+        double Q = .0;
+        if (k != kh_end(khms_states)) {
+          if (kh_val(khms_states, k)->sample_count > 0) {
+            Q = (double) kh_val(khms_states, k)->reward_count / (double) kh_val(khms_states, k)->sample_count;
+          }
+        }
+        Q += sqrt(2 * log(total_samples) / (1 + kh_val(khms_states, k)->sample_count));
+        if(maxQ < Q) {
+          maxQ = Q;
+          maxI = i;
+        }
+      }
+      result = state_ids[maxI];
+      break;
+    }
     default:
       break;
   }
@@ -1145,16 +1183,19 @@ path_t *choose_path_gfuzzer(u32 target_state_id, u8 mode)
       for (int i = 0; i < pid; i++) {
         ki = kl_next(ki);
       }
-      result = copy_path(ki->data); 
+      result = copy_path(ki->data);
       break;
     case ROUND_ROBIN:
+      PFATAL("This path selection algorithm has not been implemented yet!!!");
+      break;
+    case MAB_UCB1:
       PFATAL("This path selection algorithm has not been implemented yet!!!");
       break;
     default:
       PFATAL("This path selection algorithm has not been implemented yet!!!");
       break;
   }
-  
+
   destroy_paths(kl_paths);
   return result;
 }
@@ -1177,11 +1218,11 @@ struct queue_entry *choose_seed_gfuzzer(path_t *selected_path, u8 mode, int *mid
 
       trans = (transition_info_t *) kh_value(khmt_transitions, eid);
       if (trans == NULL) PFATAL("The trans does not exist");
-      
+
       kl_pairs = trans->seed_message_pairs;
 
       qid = UR(kl_pairs->size);
-      
+
       k = kl_begin(kl_pairs);
       for (int i = 0; i < qid; i++) {
         k = kl_next(k);
@@ -1281,8 +1322,7 @@ struct queue_entry *choose_seed(u32 target_state_id, u8 mode)
   return result;
 }
 
-void update_state_aware_variables_gfuzzer(struct queue_entry *q, u8 dry_run)
-{
+void update_state_aware_variables_gfuzzer(struct queue_entry *q, u8 dry_run) {
   //Check if graph.json is availabe
   //if so, build/update ipsm
   u8 *fname = alloc_printf("%s/graph.json", out_dir);
@@ -1290,6 +1330,12 @@ void update_state_aware_variables_gfuzzer(struct queue_entry *q, u8 dry_run)
   ck_free(fname);
 
   //update other variables that would affect state/seed selection algos
+
+  // add reward to currently selected state because we found an interesting input
+  khint_t k = kh_get(hms, khms_states, state_ids[selected_state_index]);
+  if (k != kh_end(khms_states)) {
+    kh_val(khms_states, k)->reward_count++;
+  }
 }
 
 /* Update state-aware variables */
@@ -6001,7 +6047,7 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 
     cur_it = next_it;
     next_it = kl_next(next_it);
-  } while(cur_it != M2_next);
+  } while (cur_it != M2_next);
 
   /* End of AFLNet code */
 
@@ -6009,6 +6055,12 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 
   //Update fuzz count, no matter whether the generated test is interesting or not
   if (state_aware_mode) update_fuzzs();
+
+  khint_t k = kh_get(hms, khms_states, state_ids[selected_state_index]);
+  if (k != kh_end(khms_states)) {
+    kh_val(khms_states, k)->sample_count++;
+  }
+  ++total_samples;
 
   if (stop_soon) return 1;
 
