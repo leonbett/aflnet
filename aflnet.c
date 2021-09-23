@@ -685,15 +685,6 @@ extract_response_codes_opcua(unsigned char *buf, unsigned int buf_size, unsigned
     return state_sequence;
 }
 
-unsigned int *
-extract_response_codes_smtp(unsigned char *buf, unsigned int buf_size, unsigned int *state_count_ref) {
-    char *mem;
-    unsigned int byte_count = 0;
-    unsigned int mem_count = 0;
-    unsigned int mem_size = 1024;
-    unsigned int *state_sequence = NULL;
-    unsigned int state_count = 0;
-    char terminator[2] = {0x0D, 0x0A};
 region_t* extract_requests_sip(unsigned char* buf, unsigned int buf_size, unsigned int* region_count_ref)
 {
   char *mem;
