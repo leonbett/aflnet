@@ -24,7 +24,7 @@ MISC_PATH   = $(PREFIX)/share/afl
 
 # PROGS intentionally omit afl-as, which gets installed elsewhere.
 
-PROGS       = afl-gcc afl-fuzz afl-replay aflnet-replay afl-showmap afl-tmin afl-gotcpu afl-analyze
+PROGS       = afl-gcc afl-fuzz afl-replay aflnet-replay aflnet-replay-others aflnet-replay-opensshtinytls afl-showmap afl-tmin afl-gotcpu afl-analyze
 SH_PROGS    = afl-plot afl-cmin afl-whatsup
 
 CFLAGS     ?= -O3 -funroll-loops
@@ -76,6 +76,12 @@ afl-replay: afl-replay.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
 	$(CC) $(CFLAGS) $@.c aflnet.o decoders/open62541.c -o $@ $(LDFLAGS)
 
 aflnet-replay: aflnet-replay.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
+	$(CC) $(CFLAGS) $@.c aflnet.o decoders/open62541.c -o $@ $(LDFLAGS)
+
+aflnet-replay-others: aflnet-replay-others.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
+	$(CC) $(CFLAGS) $@.c aflnet.o decoders/open62541.c -o $@ $(LDFLAGS)
+
+aflnet-replay-opensshtinytls: aflnet-replay-opensshtinytls.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
 	$(CC) $(CFLAGS) $@.c aflnet.o decoders/open62541.c -o $@ $(LDFLAGS)
 
 afl-showmap: afl-showmap.c $(COMM_HDR) | test_x86
