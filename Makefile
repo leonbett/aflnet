@@ -78,10 +78,10 @@ afl-replay: afl-replay.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
 aflnet-replay: aflnet-replay.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
 	$(CC) $(CFLAGS) $@.c aflnet.o decoders/open62541.c -o $@ $(LDFLAGS)
 
-aflnet-replay-paireval-others: aflnet-replay-others.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
+aflnet-replay-paireval-others: aflnet-replay-paireval-others.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
 	$(CC) $(CFLAGS) $@.c aflnet.o decoders/open62541.c -o $@ $(LDFLAGS)
 
-aflnet-replay-paireval-opensshtinytls: aflnet-replay-opensshtinytls.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
+aflnet-replay-paireval-opensshtinytls: aflnet-replay-paireval-opensshtinytls.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
 	$(CC) $(CFLAGS) $@.c aflnet.o decoders/open62541.c -o $@ $(LDFLAGS)
 
 afl-showmap: afl-showmap.c $(COMM_HDR) | test_x86
