@@ -154,14 +154,16 @@ unsigned int get_timestamp(char *path) {
     return (unsigned int)attr.st_mtime;
 }
 
-void pairlog(unsigned int timestamp, char* request, int response_code) {
-    char* output_file = "/home/prober/pairs.csv";
-    if (output_file) {
+void pairlog(char* pair_output_dir, unsigned int timestamp, char* request, int response_code) {
+    char output_file[512];
+    sprintf(output_file, "%s/%s", pair_output_dir, "pairs.csv");
+    //char* output_file = "/home/prober/pairs.csv";
+    //if (output_file) {
         FILE* fp = NULL;
         fp = fopen(output_file, "a+");
         fprintf(fp, "%u,%s,%d\n", timestamp, request, response_code);
         fclose(fp);
-    }
+    //}
 }
 
 unsigned int min(unsigned int a, unsigned int b) {
@@ -182,36 +184,38 @@ int main(int argc, char* argv[])
   unsigned int poll_timeout = 1;
 
 
-  if (argc < 4) {
-    PFATAL("Usage: ./aflnet-replay packet_file protocol port [first_resp_timeout(us) [follow-up_resp_timeout(ms)]]");
+  if (argc < 5) {
+    PFATAL("Usage: ./aflnet-replay pair_output_dir packet_file protocol port [first_resp_timeout(us) [follow-up_resp_timeout(ms)]]");
   }
 
-  fp = fopen(argv[1],"rb");
+  char* pair_output_dir = argv[1];
+
+  fp = fopen(argv[2],"rb");
 
   char** names = NULL;
 
-  if (!strcmp(argv[2], "RTSP")) extract_response_codes = &extract_response_codes_rtsp;
-  else if (!strcmp(argv[2], "FTP")) extract_response_codes = &extract_response_codes_ftp;
-  else if (!strcmp(argv[2], "DNS")) extract_response_codes = &extract_response_codes_dns;
-  //else if (!strcmp(argv[2], "DTLS12")) extract_response_codes = &extract_response_codes_dtls12;
-  else if (!strcmp(argv[2], "DTLS12")) {extract_response_codes = &extract_response_codes_dtls12; names = dtls_names;} // new Mark
-  else if (!strcmp(argv[2], "DICOM")) extract_response_codes = &extract_response_codes_dicom;
-  else if (!strcmp(argv[2], "SMTP")) extract_response_codes = &extract_response_codes_smtp;
-  //else if (!strcmp(argv[2], "SSH")) extract_response_codes = &extract_response_codes_ssh;
-  else if (!strcmp(argv[2], "SSH")) {extract_response_codes = &extract_response_codes_ssh; names = ssh_names;} // new mark
-  else if (!strcmp(argv[2], "TLS")) extract_response_codes = &extract_response_codes_tls;
-  else if (!strcmp(argv[2], "SIP")) extract_response_codes = &extract_response_codes_sip;
-  else if (!strcmp(argv[2], "HTTP")) extract_response_codes = &extract_response_codes_http;
-  else if (!strcmp(argv[2], "IPP")) extract_response_codes = &extract_response_codes_ipp;
-  else if (!strcmp(argv[2], "OPCUA")) extract_response_codes = &extract_response_codes_opcua;
-  else {fprintf(stderr, "[AFLNet-replay] Protocol %s has not been supported yet!\n", argv[2]); exit(1);}
+  if (!strcmp(argv[3], "RTSP")) extract_response_codes = &extract_response_codes_rtsp;
+  else if (!strcmp(argv[3], "FTP")) extract_response_codes = &extract_response_codes_ftp;
+  else if (!strcmp(argv[3], "DNS")) extract_response_codes = &extract_response_codes_dns;
+  //else if (!strcmp(argv[3], "DTLS12")) extract_response_codes = &extract_response_codes_dtls12;
+  else if (!strcmp(argv[3], "DTLS12")) {extract_response_codes = &extract_response_codes_dtls12; names = dtls_names;} // new Mark
+  else if (!strcmp(argv[3], "DICOM")) extract_response_codes = &extract_response_codes_dicom;
+  else if (!strcmp(argv[3], "SMTP")) extract_response_codes = &extract_response_codes_smtp;
+  //else if (!strcmp(argv[3], "SSH")) extract_response_codes = &extract_response_codes_ssh;
+  else if (!strcmp(argv[3], "SSH")) {extract_response_codes = &extract_response_codes_ssh; names = ssh_names;} // new mark
+  else if (!strcmp(argv[3], "TLS")) extract_response_codes = &extract_response_codes_tls;
+  else if (!strcmp(argv[3], "SIP")) extract_response_codes = &extract_response_codes_sip;
+  else if (!strcmp(argv[3], "HTTP")) extract_response_codes = &extract_response_codes_http;
+  else if (!strcmp(argv[3], "IPP")) extract_response_codes = &extract_response_codes_ipp;
+  else if (!strcmp(argv[3], "OPCUA")) extract_response_codes = &extract_response_codes_opcua;
+  else {fprintf(stderr, "[AFLNet-replay] Protocol %s has not been supported yet!\n", argv[3]); exit(1);}
 
-  portno = atoi(argv[3]);
+  portno = atoi(argv[4]);
 
-  if (argc > 4) {
-    poll_timeout = atoi(argv[4]);
-    if (argc > 5) {
-      socket_timeout = atoi(argv[5]);
+  if (argc > 5) {
+    poll_timeout = atoi(argv[5]);
+    if (argc > 6) {
+      socket_timeout = atoi(argv[6]);
     }
   }
 
@@ -225,7 +229,7 @@ int main(int argc, char* argv[])
   }
 
   int sockfd;
-  if ((!strcmp(argv[2], "DTLS12")) || (!strcmp(argv[2], "SIP"))) {
+  if ((!strcmp(argv[3], "DTLS12")) || (!strcmp(argv[3], "SIP"))) {
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
   } else {
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -324,8 +328,8 @@ int main(int argc, char* argv[])
         unsigned int *my_state_sequence;
         my_state_sequence = (*extract_response_codes)(response_buf+old_response_buf_size, response_buf_size-old_response_buf_size, &n_return_codes);
         // my_state_sequence[1] = current response code
-        unsigned int timestamp = get_timestamp(argv[1]);
-        pairlog(timestamp, cmd, my_state_sequence[1]);
+        unsigned int timestamp = get_timestamp(argv[2]);
+        pairlog(pair_output_dir, timestamp, cmd, my_state_sequence[1]);
 
         offsets_responses[responses++] = old_response_buf_size;
         old_response_buf_size = response_buf_size;
