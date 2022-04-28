@@ -5,12 +5,16 @@
 #include <sys/types.h>
 #include "alloc-inl.h"
 #include "aflnet.h"
+// new version 27.04.22
+
 
 // This is the one im using.
 
 #define server_wait_usecs 10000
 
 unsigned int* (*extract_response_codes)(unsigned char* buf, unsigned int buf_size, unsigned int* state_count_ref) = NULL;
+region_t* (*extract_requests)(unsigned char* buf, unsigned int buf_size, unsigned int* region_count_ref) = NULL;
+
 
 /* Expected arguments:
 1. Path to the test case (e.g., crash-triggering input)
@@ -27,14 +31,14 @@ unsigned int get_timestamp(char *path) {
     return (unsigned int)attr.st_mtime;
 }
 
-void pairlog(char* pair_output_dir, unsigned int timestamp, char* request, int response_code) {
+void pairlog(char* pair_output_dir, unsigned int timestamp, char* request, unsigned int response_code) {
     char output_file[512];
     sprintf(output_file, "%s/%s", pair_output_dir, "pairs.csv");
     //char* output_file = "/home/prober/pairs.csv";
     //if (output_file) {
         FILE* fp = NULL;
         fp = fopen(output_file, "a+");
-        fprintf(fp, "%u,%s,%d\n", timestamp, request, response_code);
+        fprintf(fp, "%u,%s,%u\n", timestamp, request, response_code);
         fclose(fp);
     //}
 }
@@ -53,7 +57,7 @@ int main(int argc, char* argv[])
   int response_buf_size = 0;
   unsigned int size, i, state_count, packet_count = 0;
   unsigned int *state_sequence;
-  unsigned int socket_timeout = 1000;
+  unsigned int socket_timeout = 10000; // Let's try with 10sec , LB, 28.04.22// 1000;
   unsigned int poll_timeout = 1;
 
 
@@ -78,6 +82,14 @@ int main(int argc, char* argv[])
   else if (!strcmp(argv[3], "IPP")) extract_response_codes = &extract_response_codes_ipp;
   else if (!strcmp(argv[3], "OPCUA")) extract_response_codes = &extract_response_codes_opcua;
   else {fprintf(stderr, "[AFLNet-replay] Protocol %s has not been supported yet!\n", argv[3]); exit(1);}
+
+  if (!strcmp(argv[3], "RTSP")) extract_requests = &extract_requests_rtsp;
+  else if (!strcmp(argv[3], "FTP")) extract_requests = &extract_requests_ftp;
+  else if (!strcmp(argv[3], "SSH")) extract_requests = &extract_requests_ssh;
+  else if (!strcmp(argv[3], "TLS")) extract_requests = &extract_requests_tls;
+  else if (!strcmp(argv[3], "DTLS12")) extract_requests = &extract_requests_dtls12; // not sure if we need tls or dtls12, so including both here.
+  else if (!strcmp(argv[3], "SMTP")) extract_requests = &extract_requests_smtp;
+  //TODO: also do this in opensshtinytls.c
 
   portno = atoi(argv[4]);
 
@@ -141,6 +153,19 @@ int main(int argc, char* argv[])
   int responses = 0;
   int no_responses= 0;
 
+  int ctr = 0;
+  int old_response_buf_size = response_buf_size;
+    if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) {fprintf(stderr, "wtf\n"); return 1;}//break;
+    if (response_buf_size > old_response_buf_size) {
+      // Received something
+      // TODO: Maybe do some checks/matching here.
+
+      fprintf(stderr, "initial receive\n"); // eat some initial data befre the loop here
+
+      offsets_responses[responses++] = old_response_buf_size;
+      old_response_buf_size = response_buf_size;
+    }
+
   //Send requests one by one
   //And save all the server responses
   while(!feof(fp)) {
@@ -154,20 +179,24 @@ int main(int argc, char* argv[])
       buf = (char *)ck_alloc(size);
       fread(buf, size, 1, fp);
 
-      int old_response_buf_size;
-
-
       old_response_buf_size = response_buf_size;
       if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) break;
       if (response_buf_size > old_response_buf_size) {
         // Received something
+        // TODO: Maybe do some checks/matching here.
+
+        fprintf(stderr, "shouldn't recv here.\n");
+        return 1;
+
         offsets_responses[responses++] = old_response_buf_size;
         old_response_buf_size = response_buf_size;
       }
 
+      fprintf(stderr, "send\n");
       n = net_send(sockfd, timeout, buf,size);
       if (n != size) break;
 
+      /*
       unsigned int my_size = min(size, 30); // 30 is max.
       char* cmd = (char*)malloc(my_size+1);
       //memset(cmd, 0, my_size+1);
@@ -181,6 +210,13 @@ int main(int argc, char* argv[])
           cmd[i] = ' ';
         }
       }
+      */
+      int n_cmds = 0;
+      region_t* regions = (*extract_requests)(buf, size, &n_cmds);
+      char szOutputFile[512];
+      sprintf(szOutputFile, "/tmp/regions%d", ctr);
+      save_regions_to_file(regions, n_cmds, szOutputFile);
+      ++ctr;
 
       old_response_buf_size = response_buf_size;
       if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) break;
@@ -190,8 +226,20 @@ int main(int argc, char* argv[])
         unsigned int *my_state_sequence;
         my_state_sequence = (*extract_response_codes)(response_buf+old_response_buf_size, response_buf_size-old_response_buf_size, &n_return_codes);
         // my_state_sequence[1] = current response code
-        unsigned int timestamp = get_timestamp(argv[2]);
-        pairlog(pair_output_dir, timestamp, cmd, my_state_sequence[1]);
+
+        ////// unsigned int timestamp = get_timestamp(argv[2]);
+        ////// pairlog(pair_output_dir, timestamp, cmd, my_state_sequence[1]);
+        if (strncmp("HELP", buf, strlen("HELP")) == 0) {
+            fprintf(stderr, "HELP detected, skipping\n");
+        }
+        else {
+          fprintf(stderr, "**(n_cmds, n_return_codes) [n_return_codes is always 1 more, at pos 0 is always 0.]: (%d,%d)\n", n_cmds, n_return_codes);
+          if (n_cmds != n_return_codes-1) {
+            fprintf(stderr, "mismatch\n");
+            return 1;
+          }
+        }
+
 
         offsets_responses[responses++] = old_response_buf_size;
         old_response_buf_size = response_buf_size;
@@ -201,6 +249,10 @@ int main(int argc, char* argv[])
      }
     }
   }
+
+
+  // (<size_4_byte><payload>)+
+  // <payload> 
 
   fclose(fp);
   close(sockfd);
