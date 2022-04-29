@@ -176,23 +176,16 @@ int main(int argc, char* argv[])
     }
   }
 
-  int offsets_responses[1024*10];
-  int official_requests = 0;
-  int responses = 0;
-  int no_responses= 0;
-
   int ctr = 0;
   int old_response_buf_size = response_buf_size;
-    if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) {fprintf(stderr, "wtf\n"); return 1;}//break;
-    if (response_buf_size > old_response_buf_size) {
-      // Received something
-      // TODO: Maybe do some checks/matching here.
-
-      fprintf(stderr, "initial receive\n"); // eat some initial data befre the loop here
-
-      offsets_responses[responses++] = old_response_buf_size;
-      old_response_buf_size = response_buf_size;
-    }
+  if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) {
+    fprintf(stderr, "error\n");
+    return 1;
+  }
+  if (response_buf_size > old_response_buf_size) {
+    fprintf(stderr, "initial receive\n"); // eat some initial data before the loop here
+    old_response_buf_size = response_buf_size;
+  }
   
 
   //Send requests one by one
@@ -203,25 +196,22 @@ int main(int argc, char* argv[])
       packet_count++;
       fprintf(stderr,"\nSize of the current packet (replayable chunk) %d is  %d\n", packet_count, size);
 
-      official_requests++;
-
       buf = (char *)ck_alloc(size);
       fread(buf, size, 1, fp);
 
-      // Initial recv.
       old_response_buf_size = response_buf_size;
       if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) break;
       if (response_buf_size > old_response_buf_size) {
-        fprintf(stderr, "shouldn't recv here.\n");
+        fprintf(stderr, "sanity assertion -- It should not recv any data here.\n");
         return 1;
       }
 
       int n_cmds = 0;
       region_t* regions = (*extract_requests)(buf, size, &n_cmds);
-      char szOutputFile[512];
-      sprintf(szOutputFile, "/tmp/regions%d", ctr);
-      save_regions_to_file(regions, n_cmds, szOutputFile);
-      ++ctr;
+      //char szOutputFile[512];
+      //sprintf(szOutputFile, "/tmp/regions%d", ctr);
+      //save_regions_to_file(regions, n_cmds, szOutputFile);
+      //++ctr;
 
       // Send all "regions" of replayable test case separately
       for (int i = 0; i < n_cmds; i++) {
@@ -244,16 +234,6 @@ int main(int argc, char* argv[])
 
         old_response_buf_size = response_buf_size;
 
-        /*
-        long long current_time = timeInMilliseconds();
-        while (timeInMilliseconds() - current_time < 100) { // recv continuously within 100ms
-          if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) {
-            fprintf(stderr, "break;\n");
-            break;
-          }
-        }
-        */
-
         if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) { 
           //break;
           fprintf(stderr, "recv error\n");
@@ -272,32 +252,23 @@ int main(int argc, char* argv[])
           for (int h = 0; h < n_return_codes; h++) {
             fprintf(stderr,"%d-",my_state_sequence[h]);
           }
+          fprintf(stderr, "\n");
 
-          if (strncmp("HELP", buf, strlen("HELP")) == 0) {
-              fprintf(stderr, "HELP detected, skipping\n");
+          if (n_return_codes < 2) {
+            fprintf(stderr, "There should always be > 1 return code, because the initial one at [0] is always a dummy.");
+            pairlog(pair_output_dir, 0, "N_RETURN_CODES_BUG", "N_RETURN_CODES_BUG");
+            return 2;
           }
-          else {
-            fprintf(stderr, "**(n_cmds, n_return_codes) [n_return_codes is always 1/2 more, at pos 0 is always 0.]: (%d,%d)\n", n_cmds, n_return_codes);
-            if (n_return_codes-1 != 1 && n_return_codes-1 != 2) {
-              fprintf(stderr, "mismatch. we should always get 1, sometimes 2 return codes. \n");
-              return 1;
-            }
-            /*
-            if (strncmp("LIST", buf, strlen("LIST")) == 0) {
-                fprintf(stderr, "LIST detected, expecting 2 return codes, e.g. 150/226\n");
-                if (2 != n_return_codes-1) {// technically should always send only 1//(n_cmds != n_return_codes-1) {
-                  fprintf(stderr, "mismatch\n");
-                  return 2;
-                }
-            }
-            else {
-              // normal case
-              if (1 != n_return_codes-1) {// technically should always send only 1//(n_cmds != n_return_codes-1) {
-                fprintf(stderr, "mismatch\n");
-                return 1;
-              }
-            }
-            */
+  
+          // The HELP command gets ~41 "response codes" in bftp because it lists all possible commands and AFLNet parses this as multiple commands.
+          // We don't have to filter it though - it will be simply be one state: HELP always results in:
+          // 1649273365,48:45:4c:50:0d:0a,214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214
+          fprintf(stderr, "n_return_codes-1: %d\n", n_return_codes-1);
+          if ( (n_return_codes-1 != 1 && n_return_codes-1 != 2) && // -1 because the one at [0] is only a dummy. So really we mean 1 or 2 here.
+               (strncmp("HELP", buf, strlen("HELP")) == 0 && n_return_codes-1 != 41)) {
+            pairlog(pair_output_dir, 0, "MISMATCH", "MISMATCH");
+            fprintf(stderr, "mismatch. we should always get 1, sometimes 2 return codes. \n");
+            return 1;
           }
           fprintf(stderr, "--------------------------------------------------------\n\n");
 
@@ -306,6 +277,7 @@ int main(int argc, char* argv[])
           // cmd_prefix will be handled in Python to link this with to the appropriate protocol command.
           unsigned int BUF_SIZE = 1024;
           char *cmd_prefix = malloc(BUF_SIZE);
+          char *f_cmd_prefix = cmd_prefix;
           memset(cmd_prefix, 0, BUF_SIZE);
           unsigned int dump_length = min(region_size, 100); // 100 is large enough even for rtsp, openssh etc.
           for (int j=0; j < dump_length; j++) { 
@@ -318,12 +290,13 @@ int main(int argc, char* argv[])
             else {
               format_str = middle_str;
             }
-            cmd_prefix += sprintf(cmd_prefix, format_str, buf[regions[i].start_byte + j] & 0xff);
+            f_cmd_prefix += sprintf(f_cmd_prefix, format_str, buf[regions[i].start_byte + j] & 0xff);
           }
 
 
           // There can be 1 or 2 response codes. I think not more than that. In the csv, they're joined with ":".
           char* response_codes = malloc(BUF_SIZE);
+          char* f_response_codes = response_codes;
           memset(response_codes, 0, BUF_SIZE);
           // n_return_codes[0] is some dummy element and always 0.
           for (int h = 1; h < n_return_codes; h++) {
@@ -336,7 +309,7 @@ int main(int argc, char* argv[])
             else {
               format_str = middle_str;
             }
-            response_codes += sprintf(response_codes, format_str, my_state_sequence[h]);
+            f_response_codes += sprintf(f_response_codes, format_str, my_state_sequence[h]);
           }
 
           unsigned int timestamp = get_timestamp(argv[2]);
@@ -345,13 +318,11 @@ int main(int argc, char* argv[])
           free(response_codes);
           free(cmd_prefix);
 
-          offsets_responses[responses++] = old_response_buf_size;
           old_response_buf_size = response_buf_size;
         }
         else {
-          no_responses++;
           fprintf(stderr, "no response\n");
-          return 25;
+          return 42;
         }
       }
     }
@@ -360,6 +331,7 @@ int main(int argc, char* argv[])
   fclose(fp);
   close(sockfd);
 
+  /*
   //Extract response codes
   state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
 
@@ -380,7 +352,7 @@ int main(int argc, char* argv[])
   ck_free(state_sequence);
   if (buf) ck_free(buf);
   ck_free(response_buf);
-
+  */
   return 0;
 }
 
