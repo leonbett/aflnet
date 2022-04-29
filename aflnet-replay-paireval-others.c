@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include "alloc-inl.h"
 #include "aflnet.h"
 // new version 27.04.22
@@ -32,16 +33,13 @@ unsigned int get_timestamp(char *path) {
     return (unsigned int)attr.st_mtime;
 }
 
-void pairlog(char* pair_output_dir, unsigned int timestamp, char* request, unsigned int response_code) {
+void pairlog(char* pair_output_dir, unsigned int timestamp, char* request, char* response_codes) {
     char output_file[512];
     sprintf(output_file, "%s/%s", pair_output_dir, "pairs.csv");
-    //char* output_file = "/home/prober/pairs.csv";
-    //if (output_file) {
-        FILE* fp = NULL;
-        fp = fopen(output_file, "a+");
-        fprintf(fp, "%u,%s,%u\n", timestamp, request, response_code);
-        fclose(fp);
-    //}
+    FILE* fp = NULL;
+    fp = fopen(output_file, "a+");
+    fprintf(fp, "%u,%s,%s\n", timestamp, request, response_codes);
+    fclose(fp);
 }
 
 unsigned int min(unsigned int a, unsigned int b) {
@@ -71,6 +69,12 @@ int msleep(long msec)
     return res;
 }
 
+long long timeInMilliseconds(void) {
+    struct timeval tv;
+
+    gettimeofday(&tv,NULL);
+    return (((long long)tv.tv_sec)*1000)+(tv.tv_usec/1000);
+}
 
 int main(int argc, char* argv[])
 {
@@ -81,7 +85,7 @@ int main(int argc, char* argv[])
   int response_buf_size = 0;
   unsigned int size, i, state_count, packet_count = 0;
   unsigned int *state_sequence;
-  unsigned int socket_timeout = 1000; //10000; // Let's try with 10sec , LB, 28.04.22// 1000;
+  unsigned int socket_timeout = 1000;
   unsigned int poll_timeout = 1;
 
 
@@ -189,6 +193,7 @@ int main(int argc, char* argv[])
       offsets_responses[responses++] = old_response_buf_size;
       old_response_buf_size = response_buf_size;
     }
+  
 
   //Send requests one by one
   //And save all the server responses
@@ -203,6 +208,7 @@ int main(int argc, char* argv[])
       buf = (char *)ck_alloc(size);
       fread(buf, size, 1, fp);
 
+      // Initial recv.
       old_response_buf_size = response_buf_size;
       if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) break;
       if (response_buf_size > old_response_buf_size) {
@@ -217,41 +223,47 @@ int main(int argc, char* argv[])
       save_regions_to_file(regions, n_cmds, szOutputFile);
       ++ctr;
 
+      // Send all "regions" of replayable test case separately
       for (int i = 0; i < n_cmds; i++) {
-        int64_t size = regions[i].end_byte-regions[i].start_byte+1;
+        int64_t region_size = regions[i].end_byte-regions[i].start_byte+1;
         fprintf(stderr, "--------------------------------------------------------\n");
 
-        fprintf(stderr, "send region %d: from pos %lld length %lld\n", i, regions[i].start_byte, size);
+        fprintf(stderr, "send region %d: from pos %lld length %lld\n", i, regions[i].start_byte, region_size);
         //fprintf(stderr, "send buffer: %*s\n", (int)size, buf+regions[i].start_byte);
         fprintf(stderr, "send buffer: ");
-        fwrite(buf+regions[i].start_byte, sizeof(char), (int)size, stderr);
+        fwrite(buf+regions[i].start_byte, sizeof(char), (int)region_size, stderr);
         fprintf(stderr, "\n");
 
         fprintf(stderr, "hex: ");
-        for (int j=0; j < size; j++) {
+        for (int j=0; j < region_size; j++) {
           fprintf(stderr, "%.2x ", buf[regions[i].start_byte + j] & 0xff);
         }
         fprintf(stderr, "\n");
 
-        n = net_send(sockfd, timeout, buf + regions[i].start_byte, size);
-        ////if (n != size) {fprintf(stderr, "wtf2\n"); return 1;} //break;
-      
-        //fprintf(stderr, "send\n");
-        //n = net_send(sockfd, timeout, buf,size);
-        //if (n != size) break;
-
-        ///msleep(50);//5); // wait 5ms
-        //msleep(20); // probably leads to SIGPIPE in bftp
+        n = net_send(sockfd, timeout, buf + regions[i].start_byte, region_size);
 
         old_response_buf_size = response_buf_size;
-        if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) {
-          fprintf(stderr, "break;\n");
-          break;
+
+        /*
+        long long current_time = timeInMilliseconds();
+        while (timeInMilliseconds() - current_time < 100) { // recv continuously within 100ms
+          if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) {
+            fprintf(stderr, "break;\n");
+            break;
+          }
         }
+        */
+
+        if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) { 
+          //break;
+          fprintf(stderr, "recv error\n");
+          return 1;
+        }
+
+
         fprintf(stderr, "**********************************************************\n");
         if (response_buf_size > old_response_buf_size) {
           fprintf(stderr, "received: %s\n", response_buf+old_response_buf_size);
-          // Received something
           int n_return_codes = 0;
           unsigned int *my_state_sequence;
           my_state_sequence = (*extract_response_codes)(response_buf+old_response_buf_size, response_buf_size-old_response_buf_size, &n_return_codes);
@@ -260,19 +272,78 @@ int main(int argc, char* argv[])
           for (int h = 0; h < n_return_codes; h++) {
             fprintf(stderr,"%d-",my_state_sequence[h]);
           }
-          ////// unsigned int timestamp = get_timestamp(argv[2]);
-          ////// pairlog(pair_output_dir, timestamp, cmd, my_state_sequence[1]);
+
           if (strncmp("HELP", buf, strlen("HELP")) == 0) {
               fprintf(stderr, "HELP detected, skipping\n");
           }
           else {
-            fprintf(stderr, "**(n_cmds, n_return_codes) [n_return_codes is always 1 more, at pos 0 is always 0.]: (%d,%d)\n", n_cmds, n_return_codes);
-            if (1 != n_return_codes-1) {// technically should always send only 1//(n_cmds != n_return_codes-1) {
-              fprintf(stderr, "mismatch\n");
+            fprintf(stderr, "**(n_cmds, n_return_codes) [n_return_codes is always 1/2 more, at pos 0 is always 0.]: (%d,%d)\n", n_cmds, n_return_codes);
+            if (n_return_codes-1 != 1 && n_return_codes-1 != 2) {
+              fprintf(stderr, "mismatch. we should always get 1, sometimes 2 return codes. \n");
               return 1;
             }
+            /*
+            if (strncmp("LIST", buf, strlen("LIST")) == 0) {
+                fprintf(stderr, "LIST detected, expecting 2 return codes, e.g. 150/226\n");
+                if (2 != n_return_codes-1) {// technically should always send only 1//(n_cmds != n_return_codes-1) {
+                  fprintf(stderr, "mismatch\n");
+                  return 2;
+                }
+            }
+            else {
+              // normal case
+              if (1 != n_return_codes-1) {// technically should always send only 1//(n_cmds != n_return_codes-1) {
+                fprintf(stderr, "mismatch\n");
+                return 1;
+              }
+            }
+            */
           }
           fprintf(stderr, "--------------------------------------------------------\n\n");
+
+
+          // CSV logging code
+          // cmd_prefix will be handled in Python to link this with to the appropriate protocol command.
+          unsigned int BUF_SIZE = 1024;
+          char *cmd_prefix = malloc(BUF_SIZE);
+          memset(cmd_prefix, 0, BUF_SIZE);
+          unsigned int dump_length = min(region_size, 100); // 100 is large enough even for rtsp, openssh etc.
+          for (int j=0; j < dump_length; j++) { 
+            char middle_str[] = "%.2x:";
+            char end_str[] = "%.2x";
+            char* format_str;
+            if (j == dump_length-1) {
+              format_str = end_str;
+            }
+            else {
+              format_str = middle_str;
+            }
+            cmd_prefix += sprintf(cmd_prefix, format_str, buf[regions[i].start_byte + j] & 0xff);
+          }
+
+
+          // There can be 1 or 2 response codes. I think not more than that. In the csv, they're joined with ":".
+          char* response_codes = malloc(BUF_SIZE);
+          memset(response_codes, 0, BUF_SIZE);
+          // n_return_codes[0] is some dummy element and always 0.
+          for (int h = 1; h < n_return_codes; h++) {
+            char middle_str[] = "%d:";
+            char end_str[] = "%d";
+            char* format_str;
+            if (h == n_return_codes-1) {
+              format_str = end_str;
+            }
+            else {
+              format_str = middle_str;
+            }
+            response_codes += sprintf(response_codes, format_str, my_state_sequence[h]);
+          }
+
+          unsigned int timestamp = get_timestamp(argv[2]);
+          pairlog(pair_output_dir, timestamp, cmd_prefix, response_codes);
+
+          free(response_codes);
+          free(cmd_prefix);
 
           offsets_responses[responses++] = old_response_buf_size;
           old_response_buf_size = response_buf_size;
@@ -280,15 +351,11 @@ int main(int argc, char* argv[])
         else {
           no_responses++;
           fprintf(stderr, "no response\n");
-
+          return 25;
         }
       }
     }
   }
-
-
-  // (<size_4_byte><payload>)+
-  // <payload> 
 
   fclose(fp);
   close(sockfd);
