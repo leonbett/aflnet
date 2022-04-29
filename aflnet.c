@@ -530,7 +530,7 @@ region_t* extract_requests_ftp(unsigned char* buf, unsigned int buf_size, unsign
 
     //Check if the last two bytes are 0x0D0A
     //if ((mem_count > 1) && (memcmp(&mem[mem_count - 1], terminator, 2) == 0)) {
-    if ((mem_count > 1) && (memcmp(&mem[mem_count - 1], terminator, sizeof(terminator)) == 0)) { //LB
+    if ((mem_count >= sizeof(terminator)) && (memcmp(&mem[mem_count - sizeof(terminator) + 1], terminator, sizeof(terminator)) == 0)) { //LB
       region_count++;
       regions = (region_t *)ck_realloc(regions, region_count * sizeof(region_t));
       regions[region_count - 1].start_byte = cur_start;
@@ -1438,8 +1438,8 @@ unsigned int* extract_response_codes_ftp(unsigned char* buf, unsigned int buf_si
   if (mem) ck_free(mem);
   *state_count_ref = state_count;
 
-  fprintf(stderr, "aflnet.c (responses): state_count=%u\n", state_count);
-  fprintf(stderr, "aflnet.c (responses): buf=%s\n", buf);
+  //fprintf(stderr, "aflnet.c (responses): state_count=%u\n", state_count);
+  //fprintf(stderr, "aflnet.c (responses): buf=%s\n", buf);
 
 
   return state_sequence;

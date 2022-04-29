@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <time.h>
+#include <errno.h>    
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -48,6 +49,29 @@ unsigned int min(unsigned int a, unsigned int b) {
 	else return a;
 }
 
+/* msleep(): Sleep for the requested number of milliseconds. */
+int msleep(long msec)
+{
+    struct timespec ts;
+    int res;
+
+    if (msec < 0)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    ts.tv_sec = msec / 1000;
+    ts.tv_nsec = (msec % 1000) * 1000000;
+
+    do {
+        res = nanosleep(&ts, &ts);
+    } while (res && errno == EINTR);
+
+    return res;
+}
+
+
 int main(int argc, char* argv[])
 {
   FILE *fp;
@@ -57,7 +81,7 @@ int main(int argc, char* argv[])
   int response_buf_size = 0;
   unsigned int size, i, state_count, packet_count = 0;
   unsigned int *state_sequence;
-  unsigned int socket_timeout = 10000; // Let's try with 10sec , LB, 28.04.22// 1000;
+  unsigned int socket_timeout = 1000; //10000; // Let's try with 10sec , LB, 28.04.22// 1000;
   unsigned int poll_timeout = 1;
 
 
@@ -172,7 +196,7 @@ int main(int argc, char* argv[])
     if (buf) {ck_free(buf); buf = NULL;}
     if (fread(&size, sizeof(unsigned int), 1, fp) > 0) {
       packet_count++;
-      fprintf(stderr,"\nSize of the current packet %d is  %d\n", packet_count, size);
+      fprintf(stderr,"\nSize of the current packet (replayable chunk) %d is  %d\n", packet_count, size);
 
       official_requests++;
 
@@ -182,35 +206,10 @@ int main(int argc, char* argv[])
       old_response_buf_size = response_buf_size;
       if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) break;
       if (response_buf_size > old_response_buf_size) {
-        // Received something
-        // TODO: Maybe do some checks/matching here.
-
         fprintf(stderr, "shouldn't recv here.\n");
         return 1;
-
-        offsets_responses[responses++] = old_response_buf_size;
-        old_response_buf_size = response_buf_size;
       }
 
-      fprintf(stderr, "send\n");
-      n = net_send(sockfd, timeout, buf,size);
-      if (n != size) break;
-
-      /*
-      unsigned int my_size = min(size, 30); // 30 is max.
-      char* cmd = (char*)malloc(my_size+1);
-      //memset(cmd, 0, my_size+1);
-      memcpy(cmd, buf, my_size);
-      cmd[my_size] = 0;
-      for (i = 0; i < my_size; i++) {
-        if (cmd[i] == ','){
-          cmd[i] = '$';  // || (!isalnum(cmd[i]) && !ispunct(cmd[i]) && 
-        }
-        else if (cmd[i] == '\r' || cmd[i] == '\n') { // filter this stuff, breaks csv
-          cmd[i] = ' ';
-        }
-      }
-      */
       int n_cmds = 0;
       region_t* regions = (*extract_requests)(buf, size, &n_cmds);
       char szOutputFile[512];
@@ -218,35 +217,72 @@ int main(int argc, char* argv[])
       save_regions_to_file(regions, n_cmds, szOutputFile);
       ++ctr;
 
-      old_response_buf_size = response_buf_size;
-      if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) break;
-      if (response_buf_size > old_response_buf_size) {
-      	// Received something
-        int n_return_codes = 0;
-        unsigned int *my_state_sequence;
-        my_state_sequence = (*extract_response_codes)(response_buf+old_response_buf_size, response_buf_size-old_response_buf_size, &n_return_codes);
-        // my_state_sequence[1] = current response code
+      for (int i = 0; i < n_cmds; i++) {
+        int64_t size = regions[i].end_byte-regions[i].start_byte+1;
+        fprintf(stderr, "--------------------------------------------------------\n");
 
-        ////// unsigned int timestamp = get_timestamp(argv[2]);
-        ////// pairlog(pair_output_dir, timestamp, cmd, my_state_sequence[1]);
-        if (strncmp("HELP", buf, strlen("HELP")) == 0) {
-            fprintf(stderr, "HELP detected, skipping\n");
+        fprintf(stderr, "send region %d: from pos %lld length %lld\n", i, regions[i].start_byte, size);
+        //fprintf(stderr, "send buffer: %*s\n", (int)size, buf+regions[i].start_byte);
+        fprintf(stderr, "send buffer: ");
+        fwrite(buf+regions[i].start_byte, sizeof(char), (int)size, stderr);
+        fprintf(stderr, "\n");
+
+        fprintf(stderr, "hex: ");
+        for (int j=0; j < size; j++) {
+          fprintf(stderr, "%.2x ", buf[regions[i].start_byte + j] & 0xff);
+        }
+        fprintf(stderr, "\n");
+
+        n = net_send(sockfd, timeout, buf + regions[i].start_byte, size);
+        ////if (n != size) {fprintf(stderr, "wtf2\n"); return 1;} //break;
+      
+        //fprintf(stderr, "send\n");
+        //n = net_send(sockfd, timeout, buf,size);
+        //if (n != size) break;
+
+        ///msleep(50);//5); // wait 5ms
+        //msleep(20); // probably leads to SIGPIPE in bftp
+
+        old_response_buf_size = response_buf_size;
+        if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) {
+          fprintf(stderr, "break;\n");
+          break;
+        }
+        fprintf(stderr, "**********************************************************\n");
+        if (response_buf_size > old_response_buf_size) {
+          fprintf(stderr, "received: %s\n", response_buf+old_response_buf_size);
+          // Received something
+          int n_return_codes = 0;
+          unsigned int *my_state_sequence;
+          my_state_sequence = (*extract_response_codes)(response_buf+old_response_buf_size, response_buf_size-old_response_buf_size, &n_return_codes);
+          // my_state_sequence[1] = current response code
+          fprintf(stderr, "Return codes: ");
+          for (int h = 0; h < n_return_codes; h++) {
+            fprintf(stderr,"%d-",my_state_sequence[h]);
+          }
+          ////// unsigned int timestamp = get_timestamp(argv[2]);
+          ////// pairlog(pair_output_dir, timestamp, cmd, my_state_sequence[1]);
+          if (strncmp("HELP", buf, strlen("HELP")) == 0) {
+              fprintf(stderr, "HELP detected, skipping\n");
+          }
+          else {
+            fprintf(stderr, "**(n_cmds, n_return_codes) [n_return_codes is always 1 more, at pos 0 is always 0.]: (%d,%d)\n", n_cmds, n_return_codes);
+            if (1 != n_return_codes-1) {// technically should always send only 1//(n_cmds != n_return_codes-1) {
+              fprintf(stderr, "mismatch\n");
+              return 1;
+            }
+          }
+          fprintf(stderr, "--------------------------------------------------------\n\n");
+
+          offsets_responses[responses++] = old_response_buf_size;
+          old_response_buf_size = response_buf_size;
         }
         else {
-          fprintf(stderr, "**(n_cmds, n_return_codes) [n_return_codes is always 1 more, at pos 0 is always 0.]: (%d,%d)\n", n_cmds, n_return_codes);
-          if (n_cmds != n_return_codes-1) {
-            fprintf(stderr, "mismatch\n");
-            return 1;
-          }
+          no_responses++;
+          fprintf(stderr, "no response\n");
+
         }
-
-
-        offsets_responses[responses++] = old_response_buf_size;
-        old_response_buf_size = response_buf_size;
       }
-      else {
-	    no_responses++;
-     }
     }
   }
 
