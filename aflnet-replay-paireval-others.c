@@ -76,6 +76,9 @@ long long timeInMilliseconds(void) {
     return (((long long)tv.tv_sec)*1000)+(tv.tv_usec/1000);
 }
 
+// only use in pureftp, requires a delay.
+#define pureftp 1
+
 int main(int argc, char* argv[])
 {
   FILE *fp;
@@ -232,6 +235,10 @@ int main(int argc, char* argv[])
 
         n = net_send(sockfd, timeout, buf + regions[i].start_byte, region_size);
 
+#ifdef pureftp
+        msleep(10); // required by PUREFTP
+#endif
+
         old_response_buf_size = response_buf_size;
 
         if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) { 
@@ -239,7 +246,6 @@ int main(int argc, char* argv[])
           fprintf(stderr, "recv error\n");
           return 1;
         }
-
 
         fprintf(stderr, "**********************************************************\n");
         if (response_buf_size > old_response_buf_size) {
