@@ -264,6 +264,7 @@ int main(int argc, char* argv[])
           // We don't have to filter it though - it will be simply be one state: HELP always results in:
           // 1649273365,48:45:4c:50:0d:0a,214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214
           fprintf(stderr, "n_return_codes-1: %d\n", n_return_codes-1);
+          /*
           if (n_return_codes-1 != 1 && n_return_codes-1 != 2){ // -1 because the one at [0] is only a dummy. So really we mean 1 or 2 here.
             if (strncmp("HELP", buf + regions[i].start_byte, strlen("HELP")) != 0) { // n_return_codes-1 != 41
               pairlog(pair_output_dir, 0, "MISMATCH", argv[2]);
@@ -271,6 +272,7 @@ int main(int argc, char* argv[])
               return 1;
             }
           }
+          */
           fprintf(stderr, "--------------------------------------------------------\n\n");
 
 
@@ -280,7 +282,7 @@ int main(int argc, char* argv[])
           char *cmd_prefix = malloc(BUF_SIZE);
           char *f_cmd_prefix = cmd_prefix;
           memset(cmd_prefix, 0, BUF_SIZE);
-          unsigned int dump_length = min(region_size, 100); // 100 is large enough even for rtsp, openssh etc.
+          unsigned int dump_length = min(region_size, 256); // 256 will capture everything.
           for (int j=0; j < dump_length; j++) { 
             char middle_str[] = "%.2x:";
             char end_str[] = "%.2x";
