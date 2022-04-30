@@ -265,10 +265,14 @@ int main(int argc, char* argv[])
           // 1649273365,48:45:4c:50:0d:0a,214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214
           fprintf(stderr, "n_return_codes-1: %d\n", n_return_codes-1);
           if (n_return_codes-1 != 1 && n_return_codes-1 != 2){ // -1 because the one at [0] is only a dummy. So really we mean 1 or 2 here.
-            if (strncmp("HELP", buf, strlen("HELP")) != 0) { // n_return_codes-1 != 41
+            if (strncmp("HELP", buf + regions[i].start_byte, strlen("HELP")) != 0) { // n_return_codes-1 != 41
               pairlog(pair_output_dir, 0, "MISMATCH", argv[2]);
               fprintf(stderr, "mismatch. we should always get 1, sometimes 2 return codes. (except HELP) \n");
               return 1;
+            }
+            if (strncmp("HELP", buf + regions[i].start_byte, strlen("HELP")) != 0) { // n_return_codes-1 != 41
+              fprintf(stderr, "This is HELP\n");
+              continue;
             }
           }
           fprintf(stderr, "--------------------------------------------------------\n\n");
