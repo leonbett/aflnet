@@ -508,6 +508,7 @@ region_t* extract_requests_rtsp(unsigned char* buf, unsigned int buf_size, unsig
   return regions;
 }
 
+//#define BFTP 1
 region_t* extract_requests_ftp(unsigned char* buf, unsigned int buf_size, unsigned int* region_count_ref)
 {
   char *mem;
@@ -521,7 +522,6 @@ region_t* extract_requests_ftp(unsigned char* buf, unsigned int buf_size, unsign
 
   unsigned int MAXCMD = 255; // from bftp which uses fgets.
 
-
   mem=(char *)ck_alloc(mem_size);
 
   unsigned int cur_start = 0;
@@ -530,11 +530,12 @@ region_t* extract_requests_ftp(unsigned char* buf, unsigned int buf_size, unsign
 
     memcpy(&mem[mem_count], buf + byte_count++, 1);
 
-    //Check if the last two bytes are 0x0D0A
-    //if ((mem_count > 1) && (memcmp(&mem[mem_count - 1], terminator, 2) == 0)) {
-      //sizeof(terminator)-1 also allows to match 0x0a at start of string, like bftp does.
-    if (((mem_count >= sizeof(terminator)-1) && (memcmp(&mem[mem_count - sizeof(terminator) + 1], terminator, sizeof(terminator)) == 0)) ||
-    (cur_end - cur_start + 1 >= MAXCMD - 1 )) { //The offsets should be right now. fgets reads MAXCMD-1. //LB //split after reading MAXCMD bytes - 1 without reading a newline (mimicking fgets behavior of bftpd).
+    if (((mem_count >= sizeof(terminator)-1) && (memcmp(&mem[mem_count - sizeof(terminator) + 1], terminator, sizeof(terminator)) == 0))
+    // BFTP additionally splits on every MAXCMD-1 bytes.
+    #ifdef BFTP
+    || (cur_end - cur_start + 1 >= MAXCMD - 1 )
+    #endif
+    ) { //The offsets should be right now. fgets reads MAXCMD-1. //LB //split after reading MAXCMD bytes - 1 without reading a newline (mimicking fgets behavior of bftpd).
       region_count++;
       regions = (region_t *)ck_realloc(regions, region_count * sizeof(region_t));
       regions[region_count - 1].start_byte = cur_start;
