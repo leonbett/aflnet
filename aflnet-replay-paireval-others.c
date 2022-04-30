@@ -270,10 +270,6 @@ int main(int argc, char* argv[])
               fprintf(stderr, "mismatch. we should always get 1, sometimes 2 return codes. (except HELP) \n");
               return 1;
             }
-            if (strncmp("HELP", buf + regions[i].start_byte, strlen("HELP")) != 0) { // n_return_codes-1 != 41
-              fprintf(stderr, "This is HELP\n");
-              continue;
-            }
           }
           fprintf(stderr, "--------------------------------------------------------\n\n");
 

@@ -532,7 +532,8 @@ region_t* extract_requests_ftp(unsigned char* buf, unsigned int buf_size, unsign
 
     //Check if the last two bytes are 0x0D0A
     //if ((mem_count > 1) && (memcmp(&mem[mem_count - 1], terminator, 2) == 0)) {
-    if (((mem_count >= sizeof(terminator)) && (memcmp(&mem[mem_count - sizeof(terminator) + 1], terminator, sizeof(terminator)) == 0)) ||
+      //sizeof(terminator)-1 also allows to match 0x0a at start of string, like bftp does.
+    if (((mem_count >= sizeof(terminator)-1) && (memcmp(&mem[mem_count - sizeof(terminator) + 1], terminator, sizeof(terminator)) == 0)) ||
     (cur_end - cur_start + 1 >= MAXCMD - 1 )) { //The offsets should be right now. fgets reads MAXCMD-1. //LB //split after reading MAXCMD bytes - 1 without reading a newline (mimicking fgets behavior of bftpd).
       region_count++;
       regions = (region_t *)ck_realloc(regions, region_count * sizeof(region_t));
