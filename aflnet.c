@@ -519,6 +519,8 @@ region_t* extract_requests_ftp(unsigned char* buf, unsigned int buf_size, unsign
   //char terminator[2] = {0x0D, 0x0A};
   char terminator[] = {0x0A}; // say newline is the single delimiter
 
+  unsigned int MAXCMD = 255; // from bftp which uses fgets.
+
 
   mem=(char *)ck_alloc(mem_size);
 
@@ -530,7 +532,8 @@ region_t* extract_requests_ftp(unsigned char* buf, unsigned int buf_size, unsign
 
     //Check if the last two bytes are 0x0D0A
     //if ((mem_count > 1) && (memcmp(&mem[mem_count - 1], terminator, 2) == 0)) {
-    if ((mem_count >= sizeof(terminator)) && (memcmp(&mem[mem_count - sizeof(terminator) + 1], terminator, sizeof(terminator)) == 0)) { //LB
+    if (((mem_count >= sizeof(terminator)) && (memcmp(&mem[mem_count - sizeof(terminator) + 1], terminator, sizeof(terminator)) == 0)) ||
+    (cur_end - cur_start + 1 >= MAXCMD - 1 )) { //The offsets should be right now. fgets reads MAXCMD-1. //LB //split after reading MAXCMD bytes - 1 without reading a newline (mimicking fgets behavior of bftpd).
       region_count++;
       regions = (region_t *)ck_realloc(regions, region_count * sizeof(region_t));
       regions[region_count - 1].start_byte = cur_start;
@@ -568,6 +571,7 @@ region_t* extract_requests_ftp(unsigned char* buf, unsigned int buf_size, unsign
   //in case region_count equals zero, it means that the structure of the buffer is broken
   //hence we create one region for the whole buffer
   if ((region_count == 0) && (buf_size > 0)) {
+    //LB: Not sure if this is ever reached, "Check if the last byte has been reached" part of the code above should create at least one region.
     regions = (region_t *)ck_realloc(regions, sizeof(region_t));
     regions[0].start_byte = 0;
     regions[0].end_byte = buf_size - 1;
