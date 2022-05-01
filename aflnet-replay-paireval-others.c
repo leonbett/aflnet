@@ -188,6 +188,10 @@ int main(int argc, char* argv[])
       return 1;
     }
   }
+  
+  if (!strcmp(protocol_impl, "smtp")) {
+    msleep(10);
+  } // required by exim (smtp)
 
   int ctr = 0;
   int old_response_buf_size = response_buf_size;
