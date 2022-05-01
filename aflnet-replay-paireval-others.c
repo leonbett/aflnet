@@ -238,7 +238,7 @@ int main(int argc, char* argv[])
 
         // Delay is definitely required for pureftp, and proftp.
         // Doing it for all targets here, just in case.
-        msleep(20);
+        msleep(50);
 
         old_response_buf_size = response_buf_size;
 
