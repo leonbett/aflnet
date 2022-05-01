@@ -76,9 +76,6 @@ long long timeInMilliseconds(void) {
     return (((long long)tv.tv_sec)*1000)+(tv.tv_usec/1000);
 }
 
-// only use in pureftp, requires a delay.
-#define pureftp 1 // TODO
-
 int main(int argc, char* argv[])
 {
   FILE *fp;
@@ -119,8 +116,8 @@ int main(int argc, char* argv[])
   else if (!strcmp(argv[4], "FTP")) {
     if (!strcmp(protocol_impl, "fftp")) extract_requests = &extract_requests_ftp_fftp;
     else if (!strcmp(protocol_impl, "bftp")) extract_requests = &extract_requests_ftp_bftp;
-    else if (!strcmp(protocol_impl, "pureftp")) extract_requests = &extract_requests_ftp_proftp;
-    else if (!strcmp(protocol_impl, "proftp")) extract_requests = &extract_requests_ftp_pureftp;
+    else if (!strcmp(protocol_impl, "pureftp")) extract_requests = &extract_requests_ftp_pureftp;
+    else if (!strcmp(protocol_impl, "proftp")) extract_requests = &extract_requests_ftp_proftp;
     else {
       fprintf(stderr, "unknown protocol: %s\n", protocol_impl);
       exit(1);
