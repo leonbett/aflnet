@@ -77,7 +77,7 @@ long long timeInMilliseconds(void) {
 }
 
 // only use in pureftp, requires a delay.
-#define pureftp 1
+#define pureftp 1 // TODO
 
 int main(int argc, char* argv[])
 {
