@@ -236,9 +236,9 @@ int main(int argc, char* argv[])
 
         n = net_send(sockfd, timeout, buf + regions[i].start_byte, region_size);
 
-        if (!strcmp(protocol_impl, "pureftp")) {
-          msleep(10);
-        } // required by PUREFTP
+        // Delay is definitely required for pureftp, and proftp.
+        // Doing it for all targets here, just in case.
+        msleep(20);
 
         old_response_buf_size = response_buf_size;
 
