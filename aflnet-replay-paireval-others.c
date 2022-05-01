@@ -7,10 +7,6 @@
 #include <sys/time.h>
 #include "alloc-inl.h"
 #include "aflnet.h"
-// new version 27.04.22
-
-
-// This is the one im using.
 
 #define server_wait_usecs 10000
 
@@ -88,7 +84,6 @@ int main(int argc, char* argv[])
   unsigned int socket_timeout = 1000;
   unsigned int poll_timeout = 1;
 
-
   if (argc < 6) {
     PFATAL("Usage: ./aflnet-replay pair_output_dir protocol_impl packet_file protocol port [first_resp_timeout(us) [follow-up_resp_timeout(ms)]]");
   }
@@ -127,10 +122,6 @@ int main(int argc, char* argv[])
   else if (!strcmp(argv[4], "TLS")) extract_requests = &extract_requests_tls;
   else if (!strcmp(argv[4], "DTLS12")) extract_requests = &extract_requests_dtls12; // not sure if we need tls or dtls12, so including both here.
   else if (!strcmp(argv[4], "SMTP")) extract_requests = &extract_requests_smtp;
-
-
-
-  //TODO: also do this in opensshtinytls.c
 
   portno = atoi(argv[5]);
 
@@ -203,7 +194,6 @@ int main(int argc, char* argv[])
     fprintf(stderr, "initial receive\n"); // eat some initial data before the loop here
     old_response_buf_size = response_buf_size;
   }
-  
 
   //Send requests one by one
   //And save all the server responses
@@ -234,12 +224,10 @@ int main(int argc, char* argv[])
       for (int i = 0; i < n_cmds; i++) {
         int64_t region_size = regions[i].end_byte-regions[i].start_byte+1;
         fprintf(stderr, "--------------------------------------------------------\n");
-
         fprintf(stderr, "send region %d: from pos %lld length %lld\n", i, regions[i].start_byte, region_size);
         fprintf(stderr, "send buffer: ");
         fwrite(buf+regions[i].start_byte, sizeof(char), (int)region_size, stderr);
         fprintf(stderr, "\n");
-
         fprintf(stderr, "hex: ");
         for (int j=0; j < region_size; j++) {
           fprintf(stderr, "%.2x ", buf[regions[i].start_byte + j] & 0xff);
@@ -255,7 +243,6 @@ int main(int argc, char* argv[])
         old_response_buf_size = response_buf_size;
 
         if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) { 
-          //break;
           fprintf(stderr, "recv error\n");
           return 1;
         }
@@ -266,7 +253,6 @@ int main(int argc, char* argv[])
           int n_return_codes = 0;
           unsigned int *my_state_sequence;
           my_state_sequence = (*extract_response_codes)(response_buf+old_response_buf_size, response_buf_size-old_response_buf_size, &n_return_codes);
-          // my_state_sequence[1] = current response code
           fprintf(stderr, "Return codes: ");
           for (int h = 0; h < n_return_codes; h++) {
             fprintf(stderr,"%d-",my_state_sequence[h]);
@@ -274,26 +260,13 @@ int main(int argc, char* argv[])
           fprintf(stderr, "\n");
 
           if (n_return_codes < 2) {
-            fprintf(stderr, "There should always be > 1 return code, because the initial one at [0] is always a dummy.");
+            fprintf(stderr, "There should always be > 1 return codes, because the initial one at [0] is always a dummy.");
             pairlog(pair_output_dir, 0, "N_RETURN_CODES_BUG", "N_RETURN_CODES_BUG");
             return 2;
           }
   
-          // The HELP command gets ~41 "response codes" in bftp because it lists all possible commands and AFLNet parses this as multiple commands.
-          // We don't have to filter it though - it will be simply be one state: HELP always results in:
-          // 1649273365,48:45:4c:50:0d:0a,214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214:214
           fprintf(stderr, "n_return_codes-1: %d\n", n_return_codes-1);
-          /*
-          if (n_return_codes-1 != 1 && n_return_codes-1 != 2){ // -1 because the one at [0] is only a dummy. So really we mean 1 or 2 here.
-            if (strncmp("HELP", buf + regions[i].start_byte, strlen("HELP")) != 0) { // n_return_codes-1 != 41
-              pairlog(pair_output_dir, 0, "MISMATCH", argv[2]);
-              fprintf(stderr, "mismatch. we should always get 1, sometimes 2 return codes. (except HELP) \n");
-              return 1;
-            }
-          }
-          */
           fprintf(stderr, "--------------------------------------------------------\n\n");
-
 
           // CSV logging code
           // cmd_prefix will be handled in Python to link this with to the appropriate protocol command.
@@ -316,11 +289,11 @@ int main(int argc, char* argv[])
           }
 
 
-          // There can be 1 or 2 response codes. I think not more than that. In the csv, they're joined with ":".
+          // There can be 1 or 2 response codes (maybe more?). In the csv, they're joined with ":".
           char* response_codes = malloc(BUF_SIZE);
           char* f_response_codes = response_codes;
           memset(response_codes, 0, BUF_SIZE);
-          // n_return_codes[0] is some dummy element and always 0.
+          // n_return_codes[0] is always 0.
           for (int h = 1; h < n_return_codes; h++) {
             char middle_str[] = "%d:";
             char end_str[] = "%d";
@@ -352,29 +325,6 @@ int main(int argc, char* argv[])
 
   fclose(fp);
   close(sockfd);
-
-  /*
-  //Extract response codes
-  state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
-
-  fprintf(stderr,"\n--------------------------------");
-  fprintf(stderr,"\nResponses from server:");
-
-  for (i = 0; i < state_count; i++) {
-    fprintf(stderr,"%d-",state_sequence[i]);
-  }
-
-  fprintf(stderr,"\n++++++++++++++++++++++++++++++++\nResponses in details:\n");
-  for (i=0; i < response_buf_size; i++) {
-    fprintf(stderr,"%c",response_buf[i]);
-  }
-  fprintf(stderr,"\n--------------------------------");
-
-  //Free memory
-  ck_free(state_sequence);
-  if (buf) ck_free(buf);
-  ck_free(response_buf);
-  */
   return 0;
 }
 
