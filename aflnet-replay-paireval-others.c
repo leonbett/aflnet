@@ -92,42 +92,55 @@ int main(int argc, char* argv[])
   unsigned int poll_timeout = 1;
 
 
-  if (argc < 5) {
-    PFATAL("Usage: ./aflnet-replay pair_output_dir packet_file protocol port [first_resp_timeout(us) [follow-up_resp_timeout(ms)]]");
+  if (argc < 6) {
+    PFATAL("Usage: ./aflnet-replay pair_output_dir protocol_impl packet_file protocol port [first_resp_timeout(us) [follow-up_resp_timeout(ms)]]");
   }
 
   char* pair_output_dir = argv[1];
+  char* protocol_impl = argv[2];
 
-  fp = fopen(argv[2],"rb");
+  fp = fopen(argv[3],"rb");
 
-  if (!strcmp(argv[3], "RTSP")) extract_response_codes = &extract_response_codes_rtsp;
-  else if (!strcmp(argv[3], "FTP")) extract_response_codes = &extract_response_codes_ftp;
-  else if (!strcmp(argv[3], "DNS")) extract_response_codes = &extract_response_codes_dns;
-  else if (!strcmp(argv[3], "DTLS12")) extract_response_codes = &extract_response_codes_dtls12;
-  else if (!strcmp(argv[3], "DICOM")) extract_response_codes = &extract_response_codes_dicom;
-  else if (!strcmp(argv[3], "SMTP")) extract_response_codes = &extract_response_codes_smtp;
-  else if (!strcmp(argv[3], "SSH")) extract_response_codes = &extract_response_codes_ssh;
-  else if (!strcmp(argv[3], "TLS")) extract_response_codes = &extract_response_codes_tls;
-  else if (!strcmp(argv[3], "SIP")) extract_response_codes = &extract_response_codes_sip;
-  else if (!strcmp(argv[3], "HTTP")) extract_response_codes = &extract_response_codes_http;
-  else if (!strcmp(argv[3], "IPP")) extract_response_codes = &extract_response_codes_ipp;
-  else if (!strcmp(argv[3], "OPCUA")) extract_response_codes = &extract_response_codes_opcua;
-  else {fprintf(stderr, "[AFLNet-replay] Protocol %s has not been supported yet!\n", argv[3]); exit(1);}
+  if (!strcmp(argv[4], "RTSP")) extract_response_codes = &extract_response_codes_rtsp;
+  else if (!strcmp(argv[4], "FTP")) extract_response_codes = &extract_response_codes_ftp;
+  else if (!strcmp(argv[4], "DNS")) extract_response_codes = &extract_response_codes_dns;
+  else if (!strcmp(argv[4], "DTLS12")) extract_response_codes = &extract_response_codes_dtls12;
+  else if (!strcmp(argv[4], "DICOM")) extract_response_codes = &extract_response_codes_dicom;
+  else if (!strcmp(argv[4], "SMTP")) extract_response_codes = &extract_response_codes_smtp;
+  else if (!strcmp(argv[4], "SSH")) extract_response_codes = &extract_response_codes_ssh;
+  else if (!strcmp(argv[4], "TLS")) extract_response_codes = &extract_response_codes_tls;
+  else if (!strcmp(argv[4], "SIP")) extract_response_codes = &extract_response_codes_sip;
+  else if (!strcmp(argv[4], "HTTP")) extract_response_codes = &extract_response_codes_http;
+  else if (!strcmp(argv[4], "IPP")) extract_response_codes = &extract_response_codes_ipp;
+  else if (!strcmp(argv[4], "OPCUA")) extract_response_codes = &extract_response_codes_opcua;
+  else {fprintf(stderr, "[AFLNet-replay] Protocol %s has not been supported yet!\n", argv[4]); exit(1);}
 
-  if (!strcmp(argv[3], "RTSP")) extract_requests = &extract_requests_rtsp;
-  else if (!strcmp(argv[3], "FTP")) extract_requests = &extract_requests_ftp;
-  else if (!strcmp(argv[3], "SSH")) extract_requests = &extract_requests_ssh;
-  else if (!strcmp(argv[3], "TLS")) extract_requests = &extract_requests_tls;
-  else if (!strcmp(argv[3], "DTLS12")) extract_requests = &extract_requests_dtls12; // not sure if we need tls or dtls12, so including both here.
-  else if (!strcmp(argv[3], "SMTP")) extract_requests = &extract_requests_smtp;
+  if (!strcmp(argv[4], "RTSP")) extract_requests = &extract_requests_rtsp;
+  else if (!strcmp(argv[4], "FTP")) {
+    if (!strcmp(protocol_impl, "fftp")) extract_requests = &extract_requests_ftp_fftp;
+    else if (!strcmp(protocol_impl, "bftp")) extract_requests = &extract_requests_ftp_bftp;
+    else if (!strcmp(protocol_impl, "pureftp")) extract_requests = &extract_requests_ftp_proftp;
+    else if (!strcmp(protocol_impl, "proftp")) extract_requests = &extract_requests_ftp_pureftp;
+    else {
+      fprintf(stderr, "unknown protocol: %s\n", protocol_impl);
+      exit(1);
+    }
+  } 
+  else if (!strcmp(argv[4], "SSH")) extract_requests = &extract_requests_ssh;
+  else if (!strcmp(argv[4], "TLS")) extract_requests = &extract_requests_tls;
+  else if (!strcmp(argv[4], "DTLS12")) extract_requests = &extract_requests_dtls12; // not sure if we need tls or dtls12, so including both here.
+  else if (!strcmp(argv[4], "SMTP")) extract_requests = &extract_requests_smtp;
+
+
+
   //TODO: also do this in opensshtinytls.c
 
-  portno = atoi(argv[4]);
+  portno = atoi(argv[5]);
 
-  if (argc > 5) {
-    poll_timeout = atoi(argv[5]);
-    if (argc > 6) {
-      socket_timeout = atoi(argv[6]);
+  if (argc > 6) {
+    poll_timeout = atoi(argv[6]);
+    if (argc > 7) {
+      socket_timeout = atoi(argv[7]);
     }
   }
 
@@ -141,7 +154,7 @@ int main(int argc, char* argv[])
   }
 
   int sockfd;
-  if ((!strcmp(argv[3], "DTLS12")) || (!strcmp(argv[3], "SIP"))) {
+  if ((!strcmp(argv[4], "DTLS12")) || (!strcmp(argv[4], "SIP"))) {
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
   } else {
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -222,7 +235,6 @@ int main(int argc, char* argv[])
         fprintf(stderr, "--------------------------------------------------------\n");
 
         fprintf(stderr, "send region %d: from pos %lld length %lld\n", i, regions[i].start_byte, region_size);
-        //fprintf(stderr, "send buffer: %*s\n", (int)size, buf+regions[i].start_byte);
         fprintf(stderr, "send buffer: ");
         fwrite(buf+regions[i].start_byte, sizeof(char), (int)region_size, stderr);
         fprintf(stderr, "\n");
@@ -235,9 +247,9 @@ int main(int argc, char* argv[])
 
         n = net_send(sockfd, timeout, buf + regions[i].start_byte, region_size);
 
-#ifdef pureftp
-        msleep(10); // required by PUREFTP
-#endif
+        if (!strcmp(protocol_impl, "pureftp")) {
+          msleep(10);
+        } // required by PUREFTP
 
         old_response_buf_size = response_buf_size;
 
@@ -321,7 +333,7 @@ int main(int argc, char* argv[])
             f_response_codes += sprintf(f_response_codes, format_str, my_state_sequence[h]);
           }
 
-          unsigned int timestamp = get_timestamp(argv[2]);
+          unsigned int timestamp = get_timestamp(argv[3]);
           pairlog(pair_output_dir, timestamp, cmd_prefix, response_codes);
 
           free(response_codes);

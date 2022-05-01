@@ -508,8 +508,9 @@ region_t* extract_requests_rtsp(unsigned char* buf, unsigned int buf_size, unsig
   return regions;
 }
 
-//#define BFTP 1
-region_t* extract_requests_ftp(unsigned char* buf, unsigned int buf_size, unsigned int* region_count_ref)
+// - bftp splits requests on \n . It also splits on every 254th byte if there was not a \n in between.
+// - additionally it filters all characters < 32 (decimal), i.e. deletes them from the input. We implement this in the replay program.
+region_t* extract_requests_ftp_bftp(unsigned char* buf, unsigned int buf_size, unsigned int* region_count_ref)
 {
   char *mem;
   unsigned int byte_count = 0;
@@ -517,8 +518,7 @@ region_t* extract_requests_ftp(unsigned char* buf, unsigned int buf_size, unsign
   unsigned int mem_size = 1024;
   unsigned int region_count = 0;
   region_t *regions = NULL;
-  //char terminator[2] = {0x0D, 0x0A};
-  char terminator[] = {0x0A}; // say newline is the single delimiter
+  char terminator[] = {0x0A}; // !
 
   unsigned int MAXCMD = 255; // from bftp which uses fgets.
 
@@ -532,10 +532,8 @@ region_t* extract_requests_ftp(unsigned char* buf, unsigned int buf_size, unsign
 
     if (((mem_count >= sizeof(terminator)-1) && (memcmp(&mem[mem_count - sizeof(terminator) + 1], terminator, sizeof(terminator)) == 0))
     // BFTP additionally splits on every MAXCMD-1 bytes.
-    #ifdef BFTP
     || (cur_end - cur_start + 1 >= MAXCMD - 1 )
-    #endif
-    ) { //The offsets should be right now. fgets reads MAXCMD-1. //LB //split after reading MAXCMD bytes - 1 without reading a newline (mimicking fgets behavior of bftpd).
+    ) { // (mimicking fgets behavior of bftpd).
       region_count++;
       regions = (region_t *)ck_realloc(regions, region_count * sizeof(region_t));
       regions[region_count - 1].start_byte = cur_start;
@@ -584,6 +582,162 @@ region_t* extract_requests_ftp(unsigned char* buf, unsigned int buf_size, unsign
   }
 
   fprintf(stderr, "aflnet.c: region_count=%u\n", region_count);
+  *region_count_ref = region_count;
+  return regions;
+}
+
+// - pureftp, with default configuration, splits requests on \n.
+// - additionally, it requires a ~10ms delay between send and recv, which we implement in the replay program.
+region_t* extract_requests_ftp_pureftp(unsigned char* buf, unsigned int buf_size, unsigned int* region_count_ref)
+{
+  char *mem;
+  unsigned int byte_count = 0;
+  unsigned int mem_count = 0;
+  unsigned int mem_size = 1024;
+  unsigned int region_count = 0;
+  region_t *regions = NULL;
+  char terminator[] = {0x0A}; // !
+
+  mem=(char *)ck_alloc(mem_size);
+
+  unsigned int cur_start = 0;
+  unsigned int cur_end = 0;
+  while (byte_count < buf_size) {
+
+    memcpy(&mem[mem_count], buf + byte_count++, 1);
+
+    if (((mem_count >= sizeof(terminator)-1) && (memcmp(&mem[mem_count - sizeof(terminator) + 1], terminator, sizeof(terminator)) == 0))) { 
+      region_count++;
+      regions = (region_t *)ck_realloc(regions, region_count * sizeof(region_t));
+      regions[region_count - 1].start_byte = cur_start;
+      regions[region_count - 1].end_byte = cur_end;
+      regions[region_count - 1].state_sequence = NULL;
+      regions[region_count - 1].state_count = 0;
+
+      mem_count = 0;
+      cur_start = cur_end + 1;
+      cur_end = cur_start;
+    } else {
+      mem_count++;
+      cur_end++;
+
+      //Check if the last byte has been reached
+      if (cur_end == buf_size - 1) {
+        region_count++;
+        regions = (region_t *)ck_realloc(regions, region_count * sizeof(region_t));
+        regions[region_count - 1].start_byte = cur_start;
+        regions[region_count - 1].end_byte = cur_end;
+        regions[region_count - 1].state_sequence = NULL;
+        regions[region_count - 1].state_count = 0;
+        break;
+      }
+
+      if (mem_count == mem_size) {
+        //enlarge the mem buffer
+        mem_size = mem_size * 2;
+        mem=(char *)ck_realloc(mem, mem_size);
+      }
+    }
+  }
+  if (mem) ck_free(mem);
+
+  //in case region_count equals zero, it means that the structure of the buffer is broken
+  //hence we create one region for the whole buffer
+  if ((region_count == 0) && (buf_size > 0)) {
+    //LB: Not sure if this is ever reached, "Check if the last byte has been reached" part of the code above should create at least one region.
+    regions = (region_t *)ck_realloc(regions, sizeof(region_t));
+    regions[0].start_byte = 0;
+    regions[0].end_byte = buf_size - 1;
+    regions[0].state_sequence = NULL;
+    regions[0].state_count = 0;
+
+    region_count = 1;
+  }
+
+  fprintf(stderr, "aflnet.c: region_count=%u\n", region_count);
+  *region_count_ref = region_count;
+  return regions;
+}
+
+// proftp seems to be compliant with aflnet's original request extraction.
+region_t* extract_requests_ftp_proftp(unsigned char* buf, unsigned int buf_size, unsigned int* region_count_ref)
+{
+  return extract_requests_ftp(buf, buf_size, region_count_ref);
+}
+
+// fftp (lightftp) is compliant with aflnet's original request extraction.
+region_t* extract_requests_ftp_fftp(unsigned char* buf, unsigned int buf_size, unsigned int* region_count_ref)
+{
+  return extract_requests_ftp(buf, buf_size, region_count_ref);
+}
+
+//original, from aflnet.
+region_t* extract_requests_ftp(unsigned char* buf, unsigned int buf_size, unsigned int* region_count_ref)
+{ 
+  char *mem;
+  unsigned int byte_count = 0;
+  unsigned int mem_count = 0;
+  unsigned int mem_size = 1024;
+  unsigned int region_count = 0;
+  region_t *regions = NULL;
+  char terminator[2] = {0x0D, 0x0A};
+  
+  mem=(char *)ck_alloc(mem_size);
+  
+  unsigned int cur_start = 0;
+  unsigned int cur_end = 0;
+  while (byte_count < buf_size) {
+    
+    memcpy(&mem[mem_count], buf + byte_count++, 1);
+    
+    //Check if the last two bytes are 0x0D0A
+    if ((mem_count > 1) && (memcmp(&mem[mem_count - 1], terminator, 2) == 0)) {
+      region_count++;
+      regions = (region_t *)ck_realloc(regions, region_count * sizeof(region_t));
+      regions[region_count - 1].start_byte = cur_start;
+      regions[region_count - 1].end_byte = cur_end;
+      regions[region_count - 1].state_sequence = NULL;
+      regions[region_count - 1].state_count = 0;
+      
+      mem_count = 0;
+      cur_start = cur_end + 1;
+      cur_end = cur_start;
+    } else {
+      mem_count++;
+      cur_end++;
+      
+      //Check if the last byte has been reached
+      if (cur_end == buf_size - 1) {
+        region_count++;
+        regions = (region_t *)ck_realloc(regions, region_count * sizeof(region_t));
+        regions[region_count - 1].start_byte = cur_start;
+        regions[region_count - 1].end_byte = cur_end;
+        regions[region_count - 1].state_sequence = NULL;
+        regions[region_count - 1].state_count = 0;
+        break;
+      }
+      
+      if (mem_count == mem_size) {
+        //enlarge the mem buffer
+        mem_size = mem_size * 2;
+        mem=(char *)ck_realloc(mem, mem_size);
+      }
+    }
+  }
+  if (mem) ck_free(mem);
+  
+  //in case region_count equals zero, it means that the structure of the buffer is broken
+  //hence we create one region for the whole buffer
+  if ((region_count == 0) && (buf_size > 0)) {
+    regions = (region_t *)ck_realloc(regions, sizeof(region_t));
+    regions[0].start_byte = 0;
+    regions[0].end_byte = buf_size - 1;
+    regions[0].state_sequence = NULL;
+    regions[0].state_count = 0;
+    
+    region_count = 1;
+  }
+  
   *region_count_ref = region_count;
   return regions;
 }
