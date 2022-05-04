@@ -258,7 +258,7 @@ main(int argc, char *argv[]) {
 
                 if(n != region_size) return -7;
 
-                msleep(10);
+                msleep(50);
 
                 old_response_buf_size = response_buf_size;
                 if(net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) {
@@ -301,7 +301,6 @@ main(int argc, char *argv[]) {
                     old_response_buf_size = response_buf_size;
                 } else {
                     fprintf(stderr,"\n[[[NO_RESP]]]\n");
-                    return -5; // for tinytls, stop here.
                 }
             }
         }
