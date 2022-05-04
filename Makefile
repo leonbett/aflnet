@@ -24,7 +24,7 @@ MISC_PATH   = $(PREFIX)/share/afl
 
 # PROGS intentionally omit afl-as, which gets installed elsewhere.
 
-PROGS       = afl-gcc afl-fuzz afl-replay aflnet-replay aflnet-replay-paireval-others aflnet-replay-paireval-opensshtinytls afl-showmap afl-tmin afl-gotcpu afl-analyze
+PROGS       = afl-gcc afl-fuzz afl-replay aflnet-replay aflnet-replay-paireval-others aflnet-replay-paireval-openssh aflnet-replay-paireval-tinytls afl-showmap afl-tmin afl-gotcpu afl-analyze
 SH_PROGS    = afl-plot afl-cmin afl-whatsup
 
 CFLAGS     ?= -O3 -funroll-loops
@@ -81,7 +81,10 @@ aflnet-replay: aflnet-replay.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
 aflnet-replay-paireval-others: aflnet-replay-paireval-others.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
 	$(CC) $(CFLAGS) $@.c aflnet.o decoders/open62541.c -o $@ $(LDFLAGS)
 
-aflnet-replay-paireval-opensshtinytls: aflnet-replay-paireval-opensshtinytls.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
+aflnet-replay-paireval-openssh: aflnet-replay-paireval-openssh.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
+	$(CC) $(CFLAGS) $@.c aflnet.o decoders/open62541.c -o $@ $(LDFLAGS)
+
+aflnet-replay-paireval-tinytls: aflnet-replay-paireval-tinytls.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
 	$(CC) $(CFLAGS) $@.c aflnet.o decoders/open62541.c -o $@ $(LDFLAGS)
 
 afl-showmap: afl-showmap.c $(COMM_HDR) | test_x86

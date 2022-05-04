@@ -8,28 +8,6 @@
 #include "alloc-inl.h"
 #include "aflnet.h"
 
-// With Mark' code
-
-static char *dtls_names[256] = {
-    "hello_request",
-    "client_hello",
-    "server_hello",
-    "hello_verify_request",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "certificate",
-    "server_key_exchange",
-    "certificate_request",
-    "server_hello_done",
-    "certificate_verify",
-    "client_key_exchange",
-};
-
 static char *ssh_names[256] = {
     "unknown",
     "DISCONNECT",
@@ -221,10 +199,7 @@ main(int argc, char *argv[]) {
     else if(!strcmp(argv[3], "FTP")) extract_response_codes = &extract_response_codes_ftp;
     else if(!strcmp(argv[3], "DNS")) extract_response_codes = &extract_response_codes_dns;
         //else if (!strcmp(argv[3], "DTLS12")) extract_response_codes = &extract_response_codes_dtls12;
-    else if(!strcmp(argv[3], "DTLS12")) {
-        extract_response_codes = &extract_response_codes_dtls12;
-        names = dtls_names;
-    } // new Mark
+    else if(!strcmp(argv[3], "DTLS12")) extract_response_codes = &extract_response_codes_dtls12;
     else if(!strcmp(argv[3], "DICOM")) extract_response_codes = &extract_response_codes_dicom;
     else if(!strcmp(argv[3], "SMTP")) extract_response_codes = &extract_response_codes_smtp;
         //else if (!strcmp(argv[3], "SSH")) extract_response_codes = &extract_response_codes_ssh;
@@ -308,13 +283,17 @@ main(int argc, char *argv[]) {
 
     int old_response_buf_size = response_buf_size;
 
-    unsigned int BUF_SIZE = 1024;
+    unsigned int BUF_SIZE = 5*1024;
     char* response_codes = malloc(BUF_SIZE);
-    char* f_response_codes = response_codes;
     memset(response_codes, 0, BUF_SIZE);
 
     // In my observations, openssh traffic starts with server sending the first packet and client responding.
     // So, we do the matching of command, response pairs in switched order (w.r.t the other evaluated tools).
+    // This means, for every "AFLNet packet" (consisting of multiple regions i.e. commands), we proceed as follows:
+    // For every region (command) to send, first recv(). Extract the "response codes" from the most recent received S->C packet to "response_codes".
+    // Then, send the region (command). Now log the pair: (command, response_codes)
+    // Before sending the next region, we will try to recv() again. If there is no data to be received, send the next command, i.e. command_2, and log the pair (command_2, response_codes)
+    // As soon as we receive new data, "response_codes" will update. "response_codes" can consist of multiple codes.
     
 
     while(!feof(fp)) {
@@ -334,17 +313,14 @@ main(int argc, char *argv[]) {
             int n_cmds = 0;
             region_t *regions = (*extract_requests)(buf, size, &n_cmds);
 
-            char cmds[BUF_SIZE];
-            memset(cmds, 0, BUF_SIZE);
-
             for(int i = 0; i < n_cmds; ++i) {
-
-              
               // For every command we send, first receive.
               old_response_buf_size = response_buf_size;
               if(net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) return -8;
               if(response_buf_size > old_response_buf_size) {
-                  // Server starts communication, so recv before send.
+                    // Server starts communication, so recv before send.
+                    // On receive, set up the new "response_codes".
+                    
                     memset(response_codes, 0, BUF_SIZE);
 
                     int n_return_codes = 0;
@@ -352,13 +328,9 @@ main(int argc, char *argv[]) {
                     my_state_sequence = (*extract_response_codes)(response_buf + old_response_buf_size,
                                                                   response_buf_size - old_response_buf_size,
                                                                   &n_return_codes);
-                    
-                    // In openssh, I've seen 3 response codes at once.
 
                     // n_return_codes[0] is always 0.
                     for (int h = 1; h < n_return_codes; h++) {
-                      //char middle_str[] = "%d:";
-                      //char end_str[] = "%d";
                       char *name = (names == 0 ? 0 : names[my_state_sequence[h] & 0b11111111]);
                       char* reply = (name == 0) ? "unknown" : name;
                       strcat(response_codes, ":");
@@ -371,43 +343,39 @@ main(int argc, char *argv[]) {
                     old_response_buf_size = response_buf_size;
               }
               else {
-                fprintf(stderr, "**** received nothing.\n");
-                // can happen!
+                fprintf(stderr, "**** received nothing.\n"); // can happen, no problem.
               }
 
+            int64_t region_size = regions[i].end_byte-regions[i].start_byte+1;
+            char *cur_buf = buf + regions[i].start_byte;
+            fprintf(stderr, "Sending next region\n");
 
-                int64_t region_size = regions[i].end_byte-regions[i].start_byte+1;
-                char *cur_buf = buf + regions[i].start_byte;
-                fprintf(stderr, "Sending next region\n");
+            n = net_send(sockfd, timeout, cur_buf, region_size);
 
-                n = net_send(sockfd, timeout, cur_buf, region_size);
+            //Mark's code
+            unsigned int message_count = 0;
+            unsigned int *message_sequence = extract_response_codes(cur_buf, region_size, &message_count);
+            char *cmd = "unknown";
+            if (message_count != 2) {
+                fprintf(stderr, "error, message_count must be 2 but is %u\n", message_count);
+                return -1;
+            }
+            int j = 1;
+            char *name = (names == 0 ? 0 : names[message_sequence[j] & 0b11111111]);
+            cmd = (name == 0) ? "unknown" : name;
+            fprintf(stderr, "cmd %u: %s\n", j, cmd);
+            ck_free(message_sequence);
+            fprintf(stderr,"\n[[[SENT: %s]]]\n", cmd);
+            // <\Mark's code>
 
-                //Mark's code
-                unsigned int message_count = 0;
-                unsigned int *message_sequence = extract_response_codes(cur_buf, region_size, &message_count);
-                char *cmd = "unknown";
-                if (message_count != 2) {
-                  fprintf(stderr, "error, message_count must be 2 but is %u\n", message_count);
-                  return -1;
-                }
-                int j = 1;
-                char *name = (names == 0 ? 0 : names[message_sequence[j] & 0b11111111]);
-                cmd = (name == 0) ? "unknown" : name;
-                fprintf(stderr, "cmd %u: %s\n", j, cmd);
-                ck_free(message_sequence);
-                fprintf(stderr,"\n[[[SENT: %s]]]\n", cmd);
-                // <\Mark's code>
-                strcat(cmds, ":");
-                strcat(cmds, cmd);
+            // TODO: accumulate cmd's
 
-                // TODO: accumulate cmd's
+            if(n != region_size) return -7;
 
-                if(n != region_size) return -7;
-
-                  unsigned int timestamp = get_timestamp(argv[2]);
-                  // The last command is assigned all response codes. Sometimes, openssh does not send a reply on a command, but after the next command it sends multiple, because it seems to wait on the second command.
-                  // We match this with the last cmd sent.
-                  pairlog(pair_output_dir, timestamp, cmd, response_codes); //cmds
+                unsigned int timestamp = get_timestamp(argv[2]);
+                // The last command is assigned all response codes. Sometimes, openssh does not send a reply on a command, but after the next command it sends multiple, because it seems to wait on the second command.
+                // We match this with the last cmd sent.
+                pairlog(pair_output_dir, timestamp, cmd, response_codes);
 
                 msleep(50); // delay required for openssh. 10ms was enough for tinytls?
             }

@@ -7,8 +7,6 @@
 #include "alloc-inl.h"
 #include "aflnet.h"
 
-// With Mark' code
-
 static char *dtls_names[256] = {
     "hello_request",
     "client_hello",
@@ -27,110 +25,6 @@ static char *dtls_names[256] = {
     "server_hello_done",
     "certificate_verify",
     "client_key_exchange",
-};
-
-static char *ssh_names[256] = {
-    "unknown",
-    "DISCONNECT",
-    "IGNORE",
-    "UNIMPLEMENTED",
-    "DEBUG",
-    "SERVICE_REQUEST",
-    "SERVICE_ACCEPT",
-    "EXT_INFO",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "KEXINIT",
-    "NEWKEYS",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "KEXDH_INIT / KEX_DH_GEX_REQUEST_OLD / KEX_ECDH_INIT",
-    "KEXDH_REPLY / KEX_DH_GEX_GROUP / KEX_ECDH_REPLY",
-    "KEX_DH_GEX_INIT",
-    "KEX_DH_GEX_REPLY",
-    "KEX_DH_GEX_REQUEST",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "USERAUTH_REQUEST",
-    "USERAUTH_FAILURE",
-    "USERAUTH_SUCCESS",
-    "USERAUTH_BANNER",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "USERAUTH_PK_OK / USERAUTH_PASSWD_CHANGEREQ / USERAUTH_INFO_REQUEST",
-    "USERAUTH_INFO_RESPONSE",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "GLOBAL_REQUEST",
-    "REQUEST_SUCCESS",
-    "REQUEST_FAILURE",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "unknown",
-    "CHANNEL_OPEN",
-    "CHANNEL_OPEN_CONFIRMATION",
-    "CHANNEL_OPEN_FAILURE",
-    "CHANNEL_WINDOW_ADJUST",
-    "CHANNEL_DATA",
-    "CHANNEL_EXTENDED_DATA",
-    "CHANNEL_EOF",
-    "CHANNEL_CLOSE",
-    "CHANNEL_REQUEST",
-    "CHANNEL_SUCCESS",
-    "CHANNEL_FAILURE",
 };
 
 /* msleep(): Sleep for the requested number of milliseconds. */
@@ -227,10 +121,7 @@ main(int argc, char *argv[]) {
     else if(!strcmp(argv[3], "DICOM")) extract_response_codes = &extract_response_codes_dicom;
     else if(!strcmp(argv[3], "SMTP")) extract_response_codes = &extract_response_codes_smtp;
         //else if (!strcmp(argv[3], "SSH")) extract_response_codes = &extract_response_codes_ssh;
-    else if(!strcmp(argv[3], "SSH")) {
-        extract_response_codes = &extract_response_codes_ssh;
-        names = ssh_names;
-    } // new mark
+    else if(!strcmp(argv[3], "SSH")) extract_response_codes = &extract_response_codes_ssh;
     else if(!strcmp(argv[3], "TLS")) extract_response_codes = &extract_response_codes_tls;
     else if(!strcmp(argv[3], "SIP")) extract_response_codes = &extract_response_codes_sip;
     else if(!strcmp(argv[3], "HTTP")) extract_response_codes = &extract_response_codes_http;
@@ -310,6 +201,7 @@ main(int argc, char *argv[]) {
       fprintf(stderr, "error\n");
       return 1;
     }
+
     if (response_buf_size > old_response_buf_size) {
       fprintf(stderr, "initial receive\n"); // eat some initial data before the loop here
       old_response_buf_size = response_buf_size;
@@ -336,8 +228,6 @@ main(int argc, char *argv[]) {
                 // Received something
                 fprintf(stderr, ">> shouldnt recv here\n");
                 return -10;
-                offsets_responses[responses++] = old_response_buf_size;
-                old_response_buf_size = response_buf_size;
             }
 
             int n_cmds = 0;
@@ -368,7 +258,7 @@ main(int argc, char *argv[]) {
 
                 if(n != region_size) return -7;
 
-                msleep(50); // delay required for openssh. 10ms was enough for tinytls?
+                msleep(10);
 
                 old_response_buf_size = response_buf_size;
                 if(net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) {
@@ -383,12 +273,7 @@ main(int argc, char *argv[]) {
                                                                   response_buf_size - old_response_buf_size,
                                                                   &n_return_codes);
                     
-                    /*if(n_return_codes != 2) {
-                        printf("Error extracting response codes. Invalid number of responses: %d", n_return_codes - 1);
-                        //return -2;
-                    }*/
 
-                    // In openssh, I've seen 3 response codes at once.
                     unsigned int BUF_SIZE = 1024;
                     char* response_codes = malloc(BUF_SIZE);
                     char* f_response_codes = response_codes;
@@ -410,16 +295,13 @@ main(int argc, char *argv[]) {
                     fprintf(stderr, "<<< RECV: %s\n", response_codes);
 
                     unsigned int timestamp = get_timestamp(argv[2]);
-                    // The last command is assigned all response codes. Sometimes, openssh does not send a reply on a command, but after the next command it sends multiple, because it seems to wait on the second command.
-                    // We match this with the last cmd sent.
                     pairlog(pair_output_dir, timestamp, cmd, response_codes);
 
                     offsets_responses[responses++] = old_response_buf_size;
                     old_response_buf_size = response_buf_size;
                 } else {
                     fprintf(stderr,"\n[[[NO_RESP]]]\n");
-		                //For openssh, not terminating here.
-                    //return -5;
+                    return -5; // for tinytls, stop here.
                 }
             }
         }
